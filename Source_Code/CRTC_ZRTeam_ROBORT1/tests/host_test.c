@@ -572,7 +572,8 @@ int main(void)
 
         p.right_x = 0x00;                                   /* 只推右摇杆 X：绕后轮 */
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.limit == CTRL_ROT_LIMIT, "环绕动作不受慢速档限制（上限放宽）");
+        CHECK(cmd.limit == CTRL_PIVOT_LIMIT_LO,
+              "慢速档绕转上限 = 物理可用下限 600（不是档位原始值 300）");
         Motor_StopAll();
         Mecanum_MoveLimit(cmd.vx, cmd.vy, cmd.vw, cmd.limit);
         {
@@ -583,11 +584,45 @@ int main(void)
             for (int i = 0; i < 8; i++) if (w[i] > peak) peak = w[i];
             for (int i = 0; i < 8; i++) if (w[i] != peak && w[i] > second) second = w[i];
 
-            CHECK(peak == (uint32_t)CTRL_ROT_LIMIT &&
-                  second >= (uint32_t)(CTRL_ROT_LIMIT / 2),
-                  "慢速档下绕后轮：最快轮 = 上限且第二快轮 >= 50%（不会只剩一个轮子转）");
+            CHECK(peak == (uint32_t)CTRL_PIVOT_LIMIT_LO &&
+                  second >= 300u,
+                  "慢速档下绕后轮：最快轮 = 600、第二快轮 >= 300（不会只剩一个轮子转）");
         }
         p.right_x = 0x80;
+
+        /* --- 档位对绕转的控制：三档的绕转上限必须单调递增 --- */
+        {
+            int16_t pivot_peak[CTRL_GEAR_COUNT];
+
+            Ctrl_Init();                                        /* 回到中速档(1) */
+            s_tick += CTRL_GEAR_LOCKOUT_MS;
+            p.buttons = (uint16_t)(~PS2_BTN_CROSS); (void)Ctrl_Update(&p, 1, &cmd);  /* 1 -> 0 */
+            s_tick += CTRL_GEAR_LOCKOUT_MS;
+            p.buttons = 0xFFFF; (void)Ctrl_Update(&p, 1, &cmd);
+
+            for (uint8_t g = 0; g < CTRL_GEAR_COUNT; g++)
+            {
+                if (g > 0)
+                {
+                    p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE); (void)Ctrl_Update(&p, 1, &cmd);  /* 加一档 */
+                    s_tick += CTRL_GEAR_LOCKOUT_MS;
+                    p.buttons = 0xFFFF; (void)Ctrl_Update(&p, 1, &cmd);
+                }
+
+                p.right_x = 0x00;                               /* 只推右摇杆 X */
+                (void)Ctrl_Update(&p, 1, &cmd);
+                CHECK(cmd.gear == g, "绕转档位遍历：档位序号正确");
+                pivot_peak[g] = cmd.limit;
+                p.right_x = 0x80;
+            }
+
+            CHECK(pivot_peak[0] == CTRL_PIVOT_LIMIT_LO &&
+                  pivot_peak[1] > pivot_peak[0] &&
+                  pivot_peak[2] == CTRL_PIVOT_LIMIT_HI,
+                  "三档绕转上限单调递增 600 -> 755 -> 920（档位确实控制绕转快慢）");
+            CHECK(pivot_peak[0] > CTRL_GEAR0_HI,
+                  "慢速档绕转上限(600)高于档位原始上限(300)：2:1 差速的物理需要");
+        }
 
         /* --- 档位 LED --- */
         s_gpio_a_odr = 0;

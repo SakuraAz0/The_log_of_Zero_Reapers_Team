@@ -56,6 +56,23 @@ const char *Ctrl_ModeName(Ctrl_Mode_t mode)
     }
 }
 
+/* 绕后轮的输出上限：把档位映射到"物理可用区间"[CTRL_PIVOT_LIMIT_LO, CTRL_PIVOT_LIMIT_HI]
+ * 慢速档 -> LO，快速档 -> HI，中间档线性插值。见 control.h 里的说明。 */
+static int16_t pivot_limit_for(int16_t gear_hi)
+{
+    const int32_t span_gear = (int32_t)CTRL_GEAR2_HI - CTRL_GEAR0_HI;
+    const int32_t span_lim  = (int32_t)CTRL_PIVOT_LIMIT_HI - CTRL_PIVOT_LIMIT_LO;
+    int32_t t;
+
+    if (span_gear <= 0) return CTRL_PIVOT_LIMIT_HI;
+
+    t = ((int32_t)gear_hi - CTRL_GEAR0_HI) * 1000 / span_gear;   /* 0..1000 */
+    if (t < 0)    t = 0;
+    if (t > 1000) t = 1000;
+
+    return (int16_t)(CTRL_PIVOT_LIMIT_LO + span_lim * t / 1000);
+}
+
 /* △ 加档 / ✕ 减档：边沿触发 + 去抖，按住不会连续跳档 */
 static void gear_task(uint16_t buttons, uint32_t now)
 {
@@ -160,9 +177,10 @@ uint8_t Ctrl_Update(const PS2_Data_t *ps2, uint8_t enabled, Ctrl_Output_t *out)
      *       此时被绕的那个轮子的指令恰好为 0（见主机端测试）。 */
     if (rx != 0)
     {
-        int16_t dir  = (rx > 0) ? +1 : -1;                     /* +1 = 推右 */
-        int16_t mag  = iabs16(rx);
-        int16_t side = (int16_t)(-dir * CTRL_HALF_WID_MM);     /* 同侧后轮 */
+        int16_t dir   = (rx > 0) ? +1 : -1;                    /* +1 = 推右 */
+        int16_t mag   = iabs16(rx);
+        int16_t side  = (int16_t)(-dir * CTRL_HALF_WID_MM);    /* 同侧后轮 */
+        int16_t plim  = pivot_limit_for(hi);                   /* 绕转的档位上限（物理可用区间） */
         int32_t omega;
         const int32_t arm = (int32_t)CTRL_HALF_LEN_MM + CTRL_HALF_WID_MM;
 
@@ -170,17 +188,15 @@ uint8_t Ctrl_Update(const PS2_Data_t *ps2, uint8_t enabled, Ctrl_Output_t *out)
         side = (int16_t)(-side);                               /* 取对侧后轮 */
 #endif
 
-        omega = (int32_t)CTRL_PIVOT_SIGN * (-dir) * mag * CTRL_ROT_LIMIT / CTRL_SCALE;
+        omega = (int32_t)CTRL_PIVOT_SIGN * (-dir) * mag * plim / CTRL_SCALE;
 
         out->vx += (int16_t)(omega * side / arm);
         out->vy += (int16_t)(omega * (-(int32_t)CTRL_HALF_LEN_MM) / arm);
         out->vw += (int16_t)(-omega);
-    }
 
-    /* 只有"绕后轮"这一种动作不受档位限制（它的四轮天生 2:1 差速，按慢速档限幅会转不动）；
-       自转与平移一样受档位限制 */
-    if (rx != 0)
-        out->limit = CTRL_ROT_LIMIT;
+        /* 绕转的输出上限 = 该档位对应的绕转上限（见 pivot_limit_for 说明） */
+        out->limit = plim;
+    }
 
     out->mode = CTRL_MODE_STICK;
     return 1;
