@@ -402,11 +402,11 @@ int main(void)
         p.left_x = p.left_y = p.right_x = p.right_y = 0x80;   /* 摇杆回中 */
         p.buttons = 0xFFFF;                                   /* 无按键（低有效） */
 
-        Ctrl_Init();                     /* 档位回 0（慢速） */
+        Ctrl_Init();                     /* 档位回默认（中速） */
         s_tick = 5000;                   /* 远离 0，脱离换档锁定期 */
 
         CHECK(Ctrl_Update(&p, 0, &cmd) == 0 && cmd.vx == 0, "未使能 -> 不驱动");
-        CHECK(cmd.gear == 0, "默认档位 = 0（慢速）");
+        CHECK(cmd.gear == CTRL_GEAR_DEFAULT && cmd.gear == 1, "上电默认档位 = 中速（1）");
 
         p.mode = 0;
         CHECK(Ctrl_Update(&p, 1, &cmd) == 0, "绿灯(数字)模式 -> 不驱动");
@@ -415,16 +415,11 @@ int main(void)
         /* --- 档位：△ 加档 / ✕ 减档（边沿触发 + 去抖） --- */
         p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE);
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.gear == 1, "按 △ 一次 -> 档位 1（中速）");
+        CHECK(cmd.gear == 2, "中速档按 △ -> 档位 2（快速）");
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.gear == 1, "按住 △ 不重复加档（边沿触发）");
+        CHECK(cmd.gear == 2, "按住 △ 不重复加档（边沿触发）");
         s_tick += CTRL_GEAR_LOCKOUT_MS;
         p.buttons = 0xFFFF; (void)Ctrl_Update(&p, 1, &cmd);   /* 松手 */
-        p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE);
-        (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.gear == 2, "再按 △ -> 档位 2（快速）");
-        s_tick += CTRL_GEAR_LOCKOUT_MS;
-        p.buttons = 0xFFFF; (void)Ctrl_Update(&p, 1, &cmd);
         p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE);
         (void)Ctrl_Update(&p, 1, &cmd);
         CHECK(cmd.gear == 2, "到最高档后不再增加");
@@ -433,13 +428,16 @@ int main(void)
         p.buttons = 0xFFFF; (void)Ctrl_Update(&p, 1, &cmd);
         p.buttons = (uint16_t)(~PS2_BTN_CROSS);
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.gear == 1 && cmd.brake == 0, "✕ 现在是减档（不再制动）");
+        CHECK(cmd.gear == 1 && cmd.brake == 0, "✕ 是减档（不制动）");
 
         s_tick += CTRL_GEAR_LOCKOUT_MS;
         p.buttons = 0xFFFF; (void)Ctrl_Update(&p, 1, &cmd);
+        p.buttons = (uint16_t)(~PS2_BTN_START);
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.mode == CTRL_MODE_BRAKE && cmd.brake == 1, "START -> 制动");
         p.buttons = (uint16_t)(~PS2_BTN_SELECT);
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.mode == CTRL_MODE_BRAKE && cmd.brake == 1, "SELECT -> 制动");
+        CHECK(cmd.brake == 0, "SELECT 已不再用作制动");
         p.buttons = 0xFFFF;
 
         /* --- 档位内的速度映射 --- */
@@ -447,50 +445,50 @@ int main(void)
         s_tick += CTRL_GEAR_LOCKOUT_MS;
         p.left_y = 0x00;                                   /* 左摇杆满杆推前 */
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vx == CTRL_GEAR0_HI, "慢速档满杆 -> 400（档位上限）");
-
-        /* 抬到中速档 */
-        p.left_y = 0x80;
-        s_tick += CTRL_GEAR_LOCKOUT_MS;
-        p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE); (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.gear == 1, "抬到中速档");
-        s_tick += CTRL_GEAR_LOCKOUT_MS;
-        p.buttons = 0xFFFF;
-        p.left_y = 0x00;
-        (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vx == CTRL_GEAR1_HI, "中速档满杆 -> 700（档位上限）");
+        CHECK(cmd.gear == 1 && cmd.vx == CTRL_GEAR1_HI, "默认中速档满杆 -> 700（档位上限）");
         p.left_y = 59;                                     /* 约半杆 */
         (void)Ctrl_Update(&p, 1, &cmd);
         CHECK(cmd.vx > CTRL_GEAR1_LO && cmd.vx < CTRL_GEAR1_HI,
               "中速档半杆 -> 落在 40%~70% 区间内");
         p.left_y = 0x80;
 
-        /* 极限：快速档满杆 = 1000 */
+        /* 降一档到慢速 */
         s_tick += CTRL_GEAR_LOCKOUT_MS;
-        p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE); (void)Ctrl_Update(&p, 1, &cmd);
+        p.buttons = (uint16_t)(~PS2_BTN_CROSS); (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.gear == 0, "按 ✕ 降到慢速档");
         s_tick += CTRL_GEAR_LOCKOUT_MS;
         p.buttons = 0xFFFF;
         p.left_y = 0x00;
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.gear == 2 && cmd.vx == CTRL_GEAR2_HI, "快速档满杆 -> 1000");
+        CHECK(cmd.vx == CTRL_GEAR0_HI, "慢速档满杆 -> 400（档位上限）");
+        p.left_y = 0x80;
+
+        /* 升到快速档：满杆 = 1000 */
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE); (void)Ctrl_Update(&p, 1, &cmd);   /* 0 -> 1 */
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.buttons = 0xFFFF; (void)Ctrl_Update(&p, 1, &cmd);                          /* 松手（边沿需要） */
+        p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE); (void)Ctrl_Update(&p, 1, &cmd);   /* 1 -> 2 */
+        CHECK(cmd.gear == 2, "再按 △ 回到快速档");
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.buttons = 0xFFFF;
+        p.left_y = 0x00;
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.vx == CTRL_GEAR2_HI, "快速档满杆 -> 1000");
         p.left_y = 0x80;
 
         /* --- 左摇杆 X：原地自转（纯旋转，绕底盘中心） --- */
-        Ctrl_Init();
-        s_tick += CTRL_GEAR_LOCKOUT_MS;
-        /* 用中速档（hi=700）测 */
-        p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE); (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.gear == 1, "几何测试用中速档");
+        Ctrl_Init();                                       /* 默认中速档 */
         s_tick += CTRL_GEAR_LOCKOUT_MS;
         p.buttons = 0xFFFF;
 
         p.left_x = 0x00;                                   /* 推左 */
         (void)Ctrl_Update(&p, 1, &cmd);
         CHECK(cmd.vx == 0 && cmd.vy == 0 && cmd.vw != 0, "左摇杆推左 -> 纯原地自转（vx=vy=0）");
-        CHECK(cmd.vw == -cmd.limit, "自转幅度受档位上限约束（中速档 = -700）");
+        CHECK(cmd.vw == -CTRL_ROT_LIMIT, "自转用旋转上限（不受档位限制）");
         p.left_x = 0xFF;                                   /* 推右 */
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vw == cmd.limit, "左摇杆推右 -> 反向自转");
+        CHECK(cmd.vw == CTRL_ROT_LIMIT, "左摇杆推右 -> 反向自转");
         p.left_x = 0x80;
 
         /* --- 右摇杆 X：绕"对侧"后轮（推左 -> 绕右后轮；推右 -> 绕左后轮） --- */
@@ -521,45 +519,67 @@ int main(void)
 #endif
         p.right_x = 0x80;
 
-        /* --- 右摇杆 Y：两侧差速（左快右慢 / 右快左慢），受档位限幅 --- */
-        p.left_y = 0x00;                                   /* 前进满杆 */
-        p.right_y = 0x00;                                  /* 推前 */
+        /* --- 右摇杆 Y：已清空（不产生任何指令） --- */
+        p.left_y = 0x80; p.left_x = 0x80; p.right_x = 0x80;
+        p.right_y = 0x00;                                  /* 满杆推前 */
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vw > 0, "右摇杆推前 -> 旋转量为正（左轮加速、右轮减速）");
-        Motor_StopAll();
-        Mecanum_MoveLimit(cmd.vx, cmd.vy, cmd.vw, cmd.limit);
-        CHECK(g_fake_tim2.CCR1 == (uint32_t)cmd.limit && g_fake_tim4.CCR1 > 0 &&
-              g_fake_tim4.CCR1 < g_fake_tim2.CCR1,
-              "差速左转弯：左前轮 = 档位上限、右前轮更慢");
-
-        p.right_y = 0xFF;                                  /* 拉后 */
+        CHECK(cmd.vx == 0 && cmd.vy == 0 && cmd.vw == 0, "右摇杆 Y 已清空（推前不产生指令）");
+        p.right_y = 0xFF;
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vw < 0, "右摇杆拉后 -> 旋转量为负（右轮加速、左轮减速）");
-        Motor_StopAll();
-        Mecanum_MoveLimit(cmd.vx, cmd.vy, cmd.vw, cmd.limit);
-        CHECK(g_fake_tim4.CCR1 == (uint32_t)cmd.limit && g_fake_tim2.CCR1 < g_fake_tim4.CCR1,
-              "差速右转弯：右前轮 = 档位上限、左前轮更慢");
+        CHECK(cmd.vx == 0 && cmd.vw == 0, "右摇杆 Y 拉后也无指令");
         p.right_y = 0x80;
 
-        /* --- 档位限幅：所有输出都不超过当前档位上限 --- */
-        Ctrl_Init();
-        s_tick += CTRL_GEAR_LOCKOUT_MS;
-        p.left_y = 0x00; p.left_x = 0x00; p.right_y = 0x00; p.right_x = 0x00;   /* 多轴同时满杆 */
+        /* --- 方向键：平移（上下=前后，左右=左右平移；可组合斜向） --- */
+        p.buttons = (uint16_t)(~PS2_BTN_UP);
         (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.mode == CTRL_MODE_DPAD && cmd.vx == CTRL_DPAD_SPEED && cmd.vy == 0,
+              "方向键上 -> 70% 前进");
+        p.buttons = (uint16_t)(~PS2_BTN_DOWN);
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.vx == -CTRL_DPAD_SPEED, "方向键下 -> 70% 后退");
+        p.buttons = (uint16_t)(~PS2_BTN_LEFT);
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.vx == 0 && cmd.vy == -CTRL_DPAD_SPEED, "方向键左 -> 70% 左移");
+        p.buttons = (uint16_t)(~PS2_BTN_RIGHT);
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.vy == CTRL_DPAD_SPEED, "方向键右 -> 70% 右移");
+        p.buttons = (uint16_t)(~(PS2_BTN_UP | PS2_BTN_LEFT));
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.vx == CTRL_DPAD_SPEED && cmd.vy == -CTRL_DPAD_SPEED, "方向键上+左 -> 斜向平移");
+        p.buttons = 0xFFFF;
+
+        /* --- 平移仍受档位限幅；旋转不受限 --- */
+        Ctrl_Init();                                        /* 中速档 */
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.left_y = 0x00; p.left_x = 0x80; p.right_y = 0x80; p.right_x = 0x80;
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.limit == CTRL_GEAR1_HI, "纯平移时输出上限 = 档位上限");
+        p.left_y = 0x80;
+
+        /* --- 慢速档 + 绕后轮：旋转不受档位限制，不能只剩一个轮子有效 --- */
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.buttons = (uint16_t)(~PS2_BTN_CROSS); (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.gear == 0, "降到慢速档");
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.buttons = 0xFFFF;
+        p.right_x = 0x00;                                   /* 满杆绕后轮 */
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.limit == CTRL_ROT_LIMIT, "环绕动作不受慢速档限制（上限放宽）");
         Motor_StopAll();
         Mecanum_MoveLimit(cmd.vx, cmd.vy, cmd.vw, cmd.limit);
         {
-            uint32_t m = g_fake_tim2.CCR1;
-            if (g_fake_tim2.CCR2 > m) m = g_fake_tim2.CCR2;
-            if (g_fake_tim2.CCR3 > m) m = g_fake_tim2.CCR3;
-            if (g_fake_tim2.CCR4 > m) m = g_fake_tim2.CCR4;
-            if (g_fake_tim4.CCR1 > m) m = g_fake_tim4.CCR1;
-            if (g_fake_tim4.CCR2 > m) m = g_fake_tim4.CCR2;
-            if (g_fake_tim4.CCR3 > m) m = g_fake_tim4.CCR3;
-            if (g_fake_tim4.CCR4 > m) m = g_fake_tim4.CCR4;
-            CHECK(m <= (uint32_t)CTRL_GEAR0_HI, "慢速档下多轴满杆 -> 四轮都不超过 400");
+            uint32_t w[8] = { g_fake_tim2.CCR1, g_fake_tim2.CCR2, g_fake_tim2.CCR3, g_fake_tim2.CCR4,
+                              g_fake_tim4.CCR1, g_fake_tim4.CCR2, g_fake_tim4.CCR3, g_fake_tim4.CCR4 };
+            uint32_t peak = 0, second = 0;
+
+            for (int i = 0; i < 8; i++) if (w[i] > peak) peak = w[i];
+            for (int i = 0; i < 8; i++) if (w[i] != peak && w[i] > second) second = w[i];
+
+            CHECK(peak == (uint32_t)CTRL_ROT_LIMIT &&
+                  second >= (uint32_t)(CTRL_ROT_LIMIT / 2),
+                  "慢速档下绕后轮：最快轮 = 上限且第二快轮 >= 50%（不会只剩一个轮子转）");
         }
-        p.left_y = 0x80; p.left_x = 0x80;
+        p.right_x = 0x80;
 
         /* --- 档位 LED --- */
         s_gpio_a_odr = 0;
@@ -580,7 +600,7 @@ int main(void)
           g_fake_tim2.CCR3 == 1000 && g_fake_tim2.CCR4 == 1000 &&
           g_fake_tim4.CCR1 == 1000 && g_fake_tim4.CCR2 == 1000 &&
           g_fake_tim4.CCR3 == 1000 && g_fake_tim4.CCR4 == 1000,
-          "✕ 刹车 -> 四路双输入全部 100% 占空比");
+          "START 刹车 -> 四路双输入全部 100% 占空比");
 #else
     CHECK(g_fake_tim2.CCR1 == 0 && g_fake_tim4.CCR1 == 0, "刹车方式=滑行 -> 全部为 0");
 #endif
@@ -591,11 +611,13 @@ int main(void)
         Servo_Init();
         CHECK(g_fake_tim3.PSC == 71 && g_fake_tim3.ARR == 19999,
               "TIM3 时基 = 1MHz / 20000 -> 50Hz");
-        CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == SERVO_DEFAULT_US &&
-              Servo_GetPulse(SERVO_CH_JOINT2) == SERVO_DEFAULT_US,
-              "上电两路关节舵机在中位 1500us");
-        CHECK(g_fake_tim3.CCR1 == SERVO_DEFAULT_US && g_fake_tim3.CCR2 == SERVO_DEFAULT_US,
-              "CCR1/CCR2 已写入中位脉宽");
+        CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == SERVO0_POWERON_US &&
+              Servo_GetPulse(SERVO_CH_JOINT2) == SERVO1_POWERON_US,
+              "上电关节舵机默认停在 0°（MIN 端）");
+        CHECK(g_fake_tim3.CCR1 == SERVO0_POWERON_US && g_fake_tim3.CCR2 == SERVO1_POWERON_US,
+              "CCR1/CCR2 已写入上电默认脉宽");
+        CHECK(SERVO0_MAX_US - SERVO0_MIN_US >= 2000,
+              "关节舵机行程 >= 2000us（足够转到 180°）");
 
         /* 限幅 */
         Servo_SetPulse(SERVO_CH_JOINT1, 300);

@@ -1,11 +1,11 @@
 //
 // Created by SukuraFalling on 2026/10/14.
-// 遥控操作映射 v2：档位 + 绕对侧后轮旋转 + 两侧差速（详见 control.h）
+// 遥控操作映射 v3：档位 + 方向键平移 + 自转/绕后轮 + 舵机（详见 control.h）
 //
 #include "control.h"
 
 /* ---------------- 档位状态 ---------------- */
-static uint8_t  s_gear           = 0;
+static uint8_t  s_gear           = CTRL_GEAR_DEFAULT;
 static uint32_t s_gear_lock_ms   = 0;
 static uint8_t  s_prev_gear_up   = 0;      /* 上一帧 △ 是否按下（用于边沿检测） */
 static uint8_t  s_prev_gear_down = 0;      /* 上一帧 ✕ 是否按下 */
@@ -36,7 +36,7 @@ static int16_t iabs16(int16_t v) { return (v < 0) ? (int16_t)(-v) : v; }
 
 void Ctrl_Init(void)
 {
-    s_gear           = 0;
+    s_gear           = CTRL_GEAR_DEFAULT;    /* 上电默认中速档 */
     s_gear_lock_ms   = 0;
     s_prev_gear_up   = 0;
     s_prev_gear_down = 0;
@@ -50,6 +50,7 @@ const char *Ctrl_ModeName(Ctrl_Mode_t mode)
     switch (mode)
     {
     case CTRL_MODE_STICK: return "STICK";
+    case CTRL_MODE_DPAD:  return "DPAD";
     case CTRL_MODE_BRAKE: return "BRAKE";
     default:              return "IDLE";
     }
@@ -81,7 +82,7 @@ static void gear_task(uint16_t buttons, uint32_t now)
 
 uint8_t Ctrl_Update(const PS2_Data_t *ps2, uint8_t enabled, Ctrl_Output_t *out)
 {
-    int16_t ly, lx, ry, rx;
+    int16_t ly, lx, rx;
     int16_t lo, hi;
 
     if (out == NULL) return 0;
@@ -104,18 +105,36 @@ uint8_t Ctrl_Update(const PS2_Data_t *ps2, uint8_t enabled, Ctrl_Output_t *out)
 
     if (!enabled) return 0;
 
-    /* ---- 优先级 1：SELECT 制动 ---- */
-    if (PS2_BtnDown(ps2->buttons, PS2_BTN_SELECT))
+    /* ---- 优先级 1：START 制动 ---- */
+    if (PS2_BtnDown(ps2->buttons, PS2_BTN_START))
     {
         out->brake = 1;
         out->mode  = CTRL_MODE_BRAKE;
         return 1;
     }
 
-    /* ---- 摇杆 ---- */
+    /* ---- 优先级 2：方向键平移（可组合成斜向；仍受档位上限约束） ---- */
+    {
+        int16_t dx = 0, dy = 0;
+        int16_t d = CTRL_DPAD_SPEED;
+
+        if (PS2_BtnDown(ps2->buttons, PS2_BTN_UP))    dx += d;    /* 上 = 前进 */
+        if (PS2_BtnDown(ps2->buttons, PS2_BTN_DOWN))  dx -= d;    /* 下 = 后退 */
+        if (PS2_BtnDown(ps2->buttons, PS2_BTN_LEFT))  dy -= d;    /* 左 = 左移 */
+        if (PS2_BtnDown(ps2->buttons, PS2_BTN_RIGHT)) dy += d;    /* 右 = 右移 */
+
+        if (dx != 0 || dy != 0)
+        {
+            out->vx   = dx;
+            out->vy   = dy;
+            out->mode = CTRL_MODE_DPAD;
+            return 1;
+        }
+    }
+
+    /* ---- 优先级 3：摇杆 ---- */
     ly = (int16_t)(shape(axis_up_pos(ps2->left_y))    * CTRL_LY_SIGN);
     lx = (int16_t)(shape(axis_right_pos(ps2->left_x)) * CTRL_LX_SIGN);
-    ry = (int16_t)(shape(axis_up_pos(ps2->right_y))   * CTRL_RY_SIGN);
     rx = (int16_t)(shape(axis_right_pos(ps2->right_x))* CTRL_RX_SIGN);
 
     /* 左摇杆 Y：前后。推杆幅度在当前档位区间 [lo, hi] 内线性映射 */
@@ -126,10 +145,10 @@ uint8_t Ctrl_Update(const PS2_Data_t *ps2, uint8_t enabled, Ctrl_Output_t *out)
         out->vx = (ly < 0) ? (int16_t)(-spd) : spd;
     }
 
-    /* 左摇杆 X：原地自转（绕底盘中心，纯旋转，同样受档位上限约束） */
+    /* 左摇杆 X：原地自转（绕底盘中心，纯旋转；用旋转上限，不受档位限制） */
     if (lx != 0)
     {
-        out->vw += (int16_t)((int32_t)lx * hi / CTRL_SCALE);
+        out->vw += (int16_t)((int32_t)lx * CTRL_ROT_LIMIT / CTRL_SCALE);
     }
 
     /* 右摇杆 X：绕（对侧）后轮水平旋转
@@ -151,20 +170,16 @@ uint8_t Ctrl_Update(const PS2_Data_t *ps2, uint8_t enabled, Ctrl_Output_t *out)
         side = (int16_t)(-side);                               /* 取对侧后轮 */
 #endif
 
-        omega = (int32_t)CTRL_PIVOT_SIGN * (-dir) * mag * hi / CTRL_SCALE;
+        omega = (int32_t)CTRL_PIVOT_SIGN * (-dir) * mag * CTRL_ROT_LIMIT / CTRL_SCALE;
 
         out->vx += (int16_t)(omega * side / arm);
         out->vy += (int16_t)(omega * (-(int32_t)CTRL_HALF_LEN_MM) / arm);
         out->vw += (int16_t)(-omega);
     }
 
-    /* 右摇杆 Y：两侧差速转弯（推前=左快右慢，拉后=右快左慢）
-     * 用 vw 表达左右差：左轮 +vw、右轮 -vw，即一侧加速另一侧减速 */
-    if (ry != 0)
-    {
-        int32_t diff = (int32_t)ry * hi / CTRL_SCALE * CTRL_DIFF_GAIN / CTRL_SCALE;
-        out->vw += (int16_t)(CTRL_DIFF_SIGN * diff);
-    }
+    /* 旋转类动作不受档位限制：放宽本次输出上限 */
+    if (lx != 0 || rx != 0)
+        out->limit = CTRL_ROT_LIMIT;
 
     out->mode = CTRL_MODE_STICK;
     return 1;

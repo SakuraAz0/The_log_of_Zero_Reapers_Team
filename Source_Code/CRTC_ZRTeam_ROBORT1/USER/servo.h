@@ -23,22 +23,37 @@
 #define SERVO_CH_SPARE    3
 
 // ===== 每路舵机行程（微秒）=====
-// 50Hz、常规 1.0~2.0ms 对应两端；机械爪行程先给窄一点，实测再调
-#define SERVO0_MIN_US     1000
-#define SERVO0_MAX_US     2000
-#define SERVO1_MIN_US     1000
-#define SERVO1_MAX_US     2000
+// 50Hz。要转满 180° 需要更宽的脉宽：常见 180° 舵机是 0.5~2.5ms（对应 0°~180°），
+// 之前用 1.0~2.0ms 只有约 90~120°，所以关节舵机改成 500~2500。
+// 机械爪（MG90S）先给窄行程避免顶死/堵转发烫，实测再用校准模式调。
+#define SERVO0_MIN_US     500
+#define SERVO0_MAX_US     2500
+#define SERVO1_MIN_US     500
+#define SERVO1_MAX_US     2500
 #define SERVO2_MIN_US     1200
 #define SERVO2_MAX_US     1800
-#define SERVO3_MIN_US     1000
-#define SERVO3_MAX_US     2000
+#define SERVO3_MIN_US     500
+#define SERVO3_MAX_US     2500
 
-#define SERVO_DEFAULT_US  1500          // 上电中位
-#define SERVO_SLEW_US_PER_TICK 15       // 每 10ms 最多变化 15us（全行程约 0.6s）
+// ===== 上电默认位置（微秒）=====
+// 两个关节舵机上电转到 0°（= MIN 端）；机械爪上电保持"张开"避免一开始就夹住/堵转
+#define SERVO0_POWERON_US SERVO0_MIN_US
+#define SERVO1_POWERON_US SERVO1_MIN_US
+#define SERVO2_POWERON_US SERVO2_MAX_US
+#define SERVO3_POWERON_US SERVO3_MIN_US
+
+#define SERVO_SLEW_US_PER_TICK 15       // 每 10ms 最多变化 15us（2000us 全行程约 1.3s）
 
 // 机械爪语义
 #define SERVO_GRIP_OPEN_US    SERVO2_MAX_US
 #define SERVO_GRIP_CLOSE_US   SERVO2_MIN_US
+
+// ===== 行程校准模式（调试用）=====
+// 0 = 关闭；1~4 = 该通道在 MIN/MAX 之间往返慢扫（忽略按键），用于实测机械极限、找安全行程。
+// 用法：设成对应通道 -> 烧录 -> 观察舵机在哪个脉宽开始卡/顶死 -> 把安全值填回 SERVOx_MIN/MAX_US -> 改回 0
+#ifndef SERVO_CALIBRATE_CH
+#define SERVO_CALIBRATE_CH 0
+#endif
 
 void     Servo_Init(void);
 // 每 10ms 调用一次：按住 L1/L2、R1/R2、□/○ 时按 slew 速率移动对应舵机

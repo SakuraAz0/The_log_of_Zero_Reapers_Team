@@ -13,6 +13,9 @@
 /* 每路行程 */
 static const uint16_t s_min_us[SERVO_CH_NUM] = { SERVO0_MIN_US, SERVO1_MIN_US, SERVO2_MIN_US, SERVO3_MIN_US };
 static const uint16_t s_max_us[SERVO_CH_NUM] = { SERVO0_MAX_US, SERVO1_MAX_US, SERVO2_MAX_US, SERVO3_MAX_US };
+/* 上电默认位置 */
+static const uint16_t s_poweron_us[SERVO_CH_NUM] = { SERVO0_POWERON_US, SERVO1_POWERON_US,
+                                                     SERVO2_POWERON_US, SERVO3_POWERON_US };
 
 static uint16_t s_pulse_us[SERVO_CH_NUM];    /* 当前实际脉宽 */
 static uint16_t s_target_us[SERVO_CH_NUM];   /* 目标脉宽 */
@@ -69,7 +72,7 @@ void Servo_Init(void)
 
     for (uint8_t ch = 0; ch < SERVO_CH_NUM; ch++)
     {
-        s_pulse_us[ch]  = clamp_us(ch, SERVO_DEFAULT_US);
+        s_pulse_us[ch]  = clamp_us(ch, s_poweron_us[ch]);   /* 上电默认位置 */
         s_target_us[ch] = s_pulse_us[ch];
         write_ccr(ch, s_pulse_us[ch]);
     }
@@ -137,6 +140,25 @@ static void slew_toward_target(uint8_t ch)
 
 void Servo_Task(uint16_t ps2_buttons)
 {
+#if SERVO_CALIBRATE_CH > 0
+    /* ===== 行程校准模式：该通道在 MIN/MAX 之间往返慢扫，忽略按键 =====
+     * 用来实测机械极限：看到舵机在哪个脉宽开始卡/顶死，就把安全值填回 SERVOx_MIN/MAX_US */
+    {
+        const uint8_t ch = (uint8_t)(SERVO_CALIBRATE_CH - 1);
+        static int8_t dir = 1;
+
+        if (ch < SERVO_CH_NUM)
+        {
+            if (dir > 0 && s_pulse_us[ch] >= s_max_us[ch]) dir = -1;
+            if (dir < 0 && s_pulse_us[ch] <= s_min_us[ch]) dir = 1;
+
+            s_target_us[ch] = (dir > 0) ? s_max_us[ch] : s_min_us[ch];
+            slew_toward_target(ch);
+        }
+        (void)ps2_buttons;
+        return;
+    }
+#else
     /* L1 增 / L2 减 -> 关节舵机1（MG995） */
     if (PS2_BtnDown(ps2_buttons, PS2_BTN_L1)) set_rel_target(SERVO_CH_JOINT1, +SERVO_SLEW_US_PER_TICK);
     if (PS2_BtnDown(ps2_buttons, PS2_BTN_L2)) set_rel_target(SERVO_CH_JOINT1, -SERVO_SLEW_US_PER_TICK);
@@ -151,4 +173,5 @@ void Servo_Task(uint16_t ps2_buttons)
 
     for (uint8_t ch = 0; ch < SERVO_CH_NUM; ch++)
         slew_toward_target(ch);
+#endif
 }
