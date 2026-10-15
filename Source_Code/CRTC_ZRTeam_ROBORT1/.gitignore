@@ -1,0 +1,28 @@
+# ===== 构建产物 / Build output =====
+cmake-build-*/
+build/
+Debug/
+Release/
+*.o
+*.obj
+*.d
+*.elf
+*.hex
+*.bin
+*.map
+*.su
+*.lst
+*.i
+*.exe
+
+# ===== IDE / 编辑器 / IDE & editor =====
+.idea/
+.vscode/
+*.launch
+*.ioc.bak
+*.bak
+
+# ===== 操作系统 / OS =====
+Thumbs.db
+Desktop.ini
+.DS_Store
