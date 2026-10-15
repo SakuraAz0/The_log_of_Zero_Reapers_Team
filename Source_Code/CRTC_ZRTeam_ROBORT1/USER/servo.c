@@ -27,6 +27,19 @@ static uint16_t clamp_us(uint8_t ch, int32_t us)
     return (uint16_t)us;
 }
 
+#if SERVO_GRIP_RELEASE_MS > 0
+/* 机械爪堵转保护：断开/恢复该通道（CH3）的 PWM 输出 */
+static uint8_t  s_grip_attached = 1;
+static uint32_t s_grip_hold_ms  = 0;
+
+static void gripper_attach(uint8_t on)
+{
+    if (on) SERVO_TIM->CCER |=  TIM_CCER_CC3E;
+    else    SERVO_TIM->CCER &= (uint16_t)~TIM_CCER_CC3E;
+    s_grip_attached = on;
+}
+#endif
+
 static void write_ccr(uint8_t ch, uint16_t us)
 {
     switch (ch)
@@ -80,6 +93,11 @@ void Servo_Init(void)
     SERVO_TIM->EGR = TIM_EGR_UG;                    /* 立即装载 PSC/ARR/CCR */
     SERVO_TIM->SR  = (uint16_t)~TIM_SR_UIF;         /* 清更新标志 */
     SERVO_TIM->CR1 = TIM_CR1_ARPE | TIM_CR1_CEN;    /* 自动重装载 + 启动 */
+
+#if SERVO_GRIP_RELEASE_MS > 0
+    s_grip_attached = 1;
+    s_grip_hold_ms  = 0;
+#endif
 }
 
 void Servo_SetPulse(uint8_t ch, uint16_t pulse_us)
@@ -141,19 +159,30 @@ static void slew_toward_target(uint8_t ch)
 void Servo_Task(uint16_t ps2_buttons)
 {
 #if SERVO_CALIBRATE_CH > 0
-    /* ===== 行程校准模式：该通道在 MIN/MAX 之间往返慢扫，忽略按键 =====
-     * 用来实测机械极限：看到舵机在哪个脉宽开始卡/顶死，就把安全值填回 SERVOx_MIN/MAX_US */
+    /* ===== 行程校准模式：每 SERVO_CALIBRATE_STEP_MS 毫秒跳一步、往返扫，忽略按键 =====
+     * 用来实测机械极限：盯住舵机从哪个脉宽开始卡住/发出堵转声，
+     * 再把安全值填回 SERVOx_MIN/MAX_US，并把 SERVO_CALIBRATE_CH 改回 0 */
     {
         const uint8_t ch = (uint8_t)(SERVO_CALIBRATE_CH - 1);
-        static int8_t dir = 1;
 
         if (ch < SERVO_CH_NUM)
         {
-            if (dir > 0 && s_pulse_us[ch] >= s_max_us[ch]) dir = -1;
-            if (dir < 0 && s_pulse_us[ch] <= s_min_us[ch]) dir = 1;
+            static uint32_t next_ms = 0;
+            static int16_t  offset  = 0;      /* 相对 MIN 的偏移（us） */
+            static int8_t   dir     = 1;
+            uint32_t now  = HAL_GetTick();
+            int16_t  span = (int16_t)(s_max_us[ch] - s_min_us[ch]);
 
-            s_target_us[ch] = (dir > 0) ? s_max_us[ch] : s_min_us[ch];
-            slew_toward_target(ch);
+            if ((int32_t)now >= (int32_t)next_ms)
+            {
+                next_ms = now + SERVO_CALIBRATE_STEP_MS;
+
+                offset = (int16_t)(offset + dir * SERVO_CALIBRATE_STEP_US);
+                if (offset >= span) { offset = span; dir = -1; }
+                if (offset <= 0)    { offset = 0;    dir = 1;  }
+
+                Servo_SetPulse(ch, (uint16_t)(s_min_us[ch] + offset));
+            }
         }
         (void)ps2_buttons;
         return;
@@ -168,8 +197,28 @@ void Servo_Task(uint16_t ps2_buttons)
     if (PS2_BtnDown(ps2_buttons, PS2_BTN_R2)) set_rel_target(SERVO_CH_JOINT2, -SERVO_SLEW_US_PER_TICK);
 
     /* □ 张开 / ○ 合拢 -> 机械爪（MG90S） */
-    if (PS2_BtnDown(ps2_buttons, PS2_BTN_SQUARE)) set_abs_target(SERVO_CH_GRIPPER, SERVO_GRIP_OPEN_US);
-    if (PS2_BtnDown(ps2_buttons, PS2_BTN_CIRCLE)) set_abs_target(SERVO_CH_GRIPPER, SERVO_GRIP_CLOSE_US);
+    {
+        uint8_t pressed = 0;
+
+        if (PS2_BtnDown(ps2_buttons, PS2_BTN_SQUARE)) { set_abs_target(SERVO_CH_GRIPPER, SERVO_GRIP_OPEN_US);  pressed = 1; }
+        if (PS2_BtnDown(ps2_buttons, PS2_BTN_CIRCLE)) { set_abs_target(SERVO_CH_GRIPPER, SERVO_GRIP_CLOSE_US); pressed = 1; }
+
+#if SERVO_GRIP_RELEASE_MS > 0
+        /* 到位后仍一直按住 -> 断开该通道 PWM（舵机失力），避免顶着机械限位持续堵转发烫 */
+        if (pressed && s_pulse_us[SERVO_CH_GRIPPER] == s_target_us[SERVO_CH_GRIPPER])
+        {
+            s_grip_hold_ms += 10U;
+            if (s_grip_hold_ms >= SERVO_GRIP_RELEASE_MS) gripper_attach(0);
+        }
+        else
+        {
+            s_grip_hold_ms = 0;
+            if (!s_grip_attached) gripper_attach(1);
+        }
+#else
+        (void)pressed;
+#endif
+    }
 
     for (uint8_t ch = 0; ch < SERVO_CH_NUM; ch++)
         slew_toward_target(ch);

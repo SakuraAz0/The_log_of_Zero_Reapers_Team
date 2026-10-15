@@ -485,10 +485,10 @@ int main(void)
         p.left_x = 0x00;                                   /* 推左 */
         (void)Ctrl_Update(&p, 1, &cmd);
         CHECK(cmd.vx == 0 && cmd.vy == 0 && cmd.vw != 0, "左摇杆推左 -> 纯原地自转（vx=vy=0）");
-        CHECK(cmd.vw == -CTRL_ROT_LIMIT, "自转用旋转上限（不受档位限制）");
+        CHECK(cmd.vw == -CTRL_GEAR1_HI, "自转受档位限制（中速档 = -700）");
         p.left_x = 0xFF;                                   /* 推右 */
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vw == CTRL_ROT_LIMIT, "左摇杆推右 -> 反向自转");
+        CHECK(cmd.vw == CTRL_GEAR1_HI, "左摇杆推右 -> 反向自转");
         p.left_x = 0x80;
 
         /* --- 右摇杆 X：绕"对侧"后轮（推左 -> 绕右后轮；推右 -> 绕左后轮） --- */
@@ -556,13 +556,20 @@ int main(void)
         CHECK(cmd.limit == CTRL_GEAR1_HI, "纯平移时输出上限 = 档位上限");
         p.left_y = 0x80;
 
-        /* --- 慢速档 + 绕后轮：旋转不受档位限制，不能只剩一个轮子有效 --- */
+        /* --- 慢速档：平移/自转仍受限，绕后轮不受限 --- */
         s_tick += CTRL_GEAR_LOCKOUT_MS;
         p.buttons = (uint16_t)(~PS2_BTN_CROSS); (void)Ctrl_Update(&p, 1, &cmd);
         CHECK(cmd.gear == 0, "降到慢速档");
         s_tick += CTRL_GEAR_LOCKOUT_MS;
         p.buttons = 0xFFFF;
-        p.right_x = 0x00;                                   /* 满杆绕后轮 */
+
+        p.left_x = 0x00; p.right_x = 0x80;                  /* 只推左摇杆 X：自转 */
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.vw == -CTRL_GEAR0_HI && cmd.limit == CTRL_GEAR0_HI,
+              "慢速档自转 -> 400（与平移一致，受档位限制）");
+        p.left_x = 0x80;
+
+        p.right_x = 0x00;                                   /* 只推右摇杆 X：绕后轮 */
         (void)Ctrl_Update(&p, 1, &cmd);
         CHECK(cmd.limit == CTRL_ROT_LIMIT, "环绕动作不受慢速档限制（上限放宽）");
         Motor_StopAll();
@@ -618,6 +625,10 @@ int main(void)
               "CCR1/CCR2 已写入上电默认脉宽");
         CHECK(SERVO0_MAX_US - SERVO0_MIN_US >= 2000,
               "关节舵机行程 >= 2000us（足够转到 180°）");
+        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == 1500,
+              "机械爪上电停在中位 1500us（安全起点，避免顶死堵转）");
+        CHECK(SERVO2_MAX_US - SERVO2_MIN_US <= 400,
+              "机械爪默认给窄行程占位（校准前先避免顶到机械限位）");
 
         /* 限幅 */
         Servo_SetPulse(SERVO_CH_JOINT1, 300);

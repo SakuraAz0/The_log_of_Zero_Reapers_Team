@@ -145,10 +145,10 @@ uint8_t Ctrl_Update(const PS2_Data_t *ps2, uint8_t enabled, Ctrl_Output_t *out)
         out->vx = (ly < 0) ? (int16_t)(-spd) : spd;
     }
 
-    /* 左摇杆 X：原地自转（绕底盘中心，纯旋转；用旋转上限，不受档位限制） */
+    /* 左摇杆 X：原地自转（绕底盘中心，纯旋转；按档位限制，与平移一致） */
     if (lx != 0)
     {
-        out->vw += (int16_t)((int32_t)lx * CTRL_ROT_LIMIT / CTRL_SCALE);
+        out->vw += (int16_t)((int32_t)lx * hi / CTRL_SCALE);
     }
 
     /* 右摇杆 X：绕（对侧）后轮水平旋转
@@ -177,8 +177,9 @@ uint8_t Ctrl_Update(const PS2_Data_t *ps2, uint8_t enabled, Ctrl_Output_t *out)
         out->vw += (int16_t)(-omega);
     }
 
-    /* 旋转类动作不受档位限制：放宽本次输出上限 */
-    if (lx != 0 || rx != 0)
+    /* 只有"绕后轮"这一种动作不受档位限制（它的四轮天生 2:1 差速，按慢速档限幅会转不动）；
+       自转与平移一样受档位限制 */
+    if (rx != 0)
         out->limit = CTRL_ROT_LIMIT;
 
     out->mode = CTRL_MODE_STICK;
