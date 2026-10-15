@@ -16,6 +16,9 @@ static const uint16_t s_max_us[SERVO_CH_NUM] = { SERVO0_MAX_US, SERVO1_MAX_US, S
 /* 上电默认位置 */
 static const uint16_t s_poweron_us[SERVO_CH_NUM] = { SERVO0_POWERON_US, SERVO1_POWERON_US,
                                                      SERVO2_POWERON_US, SERVO3_POWERON_US };
+/* 机械角度范围（度） */
+static const uint16_t s_max_deg[SERVO_CH_NUM] = { SERVO0_MAX_DEG, SERVO1_MAX_DEG,
+                                                  SERVO2_MAX_DEG, SERVO3_MAX_DEG };
 
 static uint16_t s_pulse_us[SERVO_CH_NUM];    /* 当前实际脉宽 */
 static uint16_t s_target_us[SERVO_CH_NUM];   /* 目标脉宽 */
@@ -107,6 +110,18 @@ void Servo_SetPulse(uint8_t ch, uint16_t pulse_us)
     s_pulse_us[ch]  = clamp_us(ch, (int32_t)pulse_us);
     s_target_us[ch] = s_pulse_us[ch];
     write_ccr(ch, s_pulse_us[ch]);
+}
+
+// 按机械角度设置：pulse = MIN + (MAX-MIN) × 角度 / 该通道最大角度
+void Servo_SetAngle(uint8_t ch, uint16_t deg)
+{
+    uint32_t span;
+
+    if (ch >= SERVO_CH_NUM) return;
+    if (deg > s_max_deg[ch]) deg = s_max_deg[ch];
+
+    span = (uint32_t)(s_max_us[ch] - s_min_us[ch]);
+    Servo_SetPulse(ch, (uint16_t)(s_min_us[ch] + span * deg / s_max_deg[ch]));
 }
 
 uint16_t Servo_GetPulse(uint8_t ch)

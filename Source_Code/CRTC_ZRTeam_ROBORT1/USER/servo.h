@@ -23,26 +23,34 @@
 #define SERVO_CH_SPARE    3
 
 // ===== 每路舵机行程（微秒）=====
-// 50Hz。MG90S/SG90/MG995 都是 180° 位置舵机：500~2500us = 0~180°（见 MG90S 模块说明）。
-// - 两个关节舵机：给全行程 500~2500（要转满 180°）
-// - 机械爪：**这里先给一个很窄的安全占位值 1400~1600**，因为机械爪的可用角度由连杆机构决定，
-//   不一定是舵机的全行程；直接给 500/2500 会顶在机械死点上 -> 堵转 -> 卡住 + 发烫（实测遇到）。
-//   请用下面的 SERVO_CALIBRATE_CH 校准模式实测出"开始卡"的两个脉宽，再把安全值填进来。
+// 50Hz。MG90S/SG90/MG995 都是 180° 位置舵机：500~2500us = 0~180°（见 MG90S 模块说明），
+// 线性关系 pulse = 500 + 角度 × 11.11。
+// - 两个关节舵机（MG995/SG90）：给全行程 500~2500（0~180°）
+// - 机械爪（MG90S）：**机构限制只能转 90°**，0°=完全闭合、90°=完全张开
+//   -> 对应 500us(全闭) ~ 1500us(全开)。
+//   注意：两端都是机械死点，**不要长时间停在这两个端点上**（会顶住堵转发烫），
+//   所以上电默认停在中位 1000us(45°，半开)。
+//   若实测两端有嗡嗡声，把两端各向内收 20~50us（如 520/1480）。
 #define SERVO0_MIN_US     500
 #define SERVO0_MAX_US     2500
 #define SERVO1_MIN_US     500
 #define SERVO1_MAX_US     2500
-#define SERVO2_MIN_US     1400
-#define SERVO2_MAX_US     1600
+#define SERVO2_MIN_US     500
+#define SERVO2_MAX_US     1500
 #define SERVO3_MIN_US     500
 #define SERVO3_MAX_US     2500
 
+// ===== 每路舵机的机械角度范围（用于 Servo_SetAngle）=====
+#define SERVO0_MAX_DEG    180
+#define SERVO1_MAX_DEG    180
+#define SERVO2_MAX_DEG    90       // 机械爪：0°=全闭、90°=全开
+#define SERVO3_MAX_DEG    180
+
 // ===== 上电默认位置（微秒）=====
-// 关节舵机上电转到 0°（= MIN 端）；机械爪上电停在 1500 中位
-// （MG90S 说明第 5 条：上电先给 1.5ms 中位最安全，避免一上电就顶到死点）
+// 关节舵机上电转到 0°（= MIN 端）；机械爪上电停在 1000us（45° 半开，避开两端死点）
 #define SERVO0_POWERON_US SERVO0_MIN_US
 #define SERVO1_POWERON_US SERVO1_MIN_US
-#define SERVO2_POWERON_US 1500
+#define SERVO2_POWERON_US 1000
 #define SERVO3_POWERON_US SERVO3_MIN_US
 
 #define SERVO_SLEW_US_PER_TICK 15       // 每 10ms 最多变化 15us（2000us 全行程约 1.3s）
@@ -74,6 +82,9 @@ void     Servo_Init(void);
 void     Servo_Task(uint16_t ps2_buttons);
 // 直接指定脉宽（会按该通道 min/max 限幅，并立即生效，不做插值）
 void     Servo_SetPulse(uint8_t ch, uint16_t pulse_us);
+// 按"机械角度"设置（0~该通道 SERVOx_MAX_DEG，超范围自动限幅）
+// 机械爪：0 = 完全闭合，90 = 完全张开
+void     Servo_SetAngle(uint8_t ch, uint16_t deg);
 uint16_t Servo_GetPulse(uint8_t ch);    // 当前实际脉宽
 uint16_t Servo_GetTarget(uint8_t ch);   // 目标脉宽
 

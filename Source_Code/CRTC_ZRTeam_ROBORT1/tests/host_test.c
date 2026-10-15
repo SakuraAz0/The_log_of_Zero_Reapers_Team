@@ -445,11 +445,11 @@ int main(void)
         s_tick += CTRL_GEAR_LOCKOUT_MS;
         p.left_y = 0x00;                                   /* 左摇杆满杆推前 */
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.gear == 1 && cmd.vx == CTRL_GEAR1_HI, "默认中速档满杆 -> 700（档位上限）");
+        CHECK(cmd.gear == 1 && cmd.vx == CTRL_GEAR1_HI, "默认中速档满杆 -> 600（档位上限）");
         p.left_y = 59;                                     /* 约半杆 */
         (void)Ctrl_Update(&p, 1, &cmd);
         CHECK(cmd.vx > CTRL_GEAR1_LO && cmd.vx < CTRL_GEAR1_HI,
-              "中速档半杆 -> 落在 40%~70% 区间内");
+              "中速档半杆 -> 落在 30%~60% 区间内");
         p.left_y = 0x80;
 
         /* 降一档到慢速 */
@@ -460,7 +460,7 @@ int main(void)
         p.buttons = 0xFFFF;
         p.left_y = 0x00;
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vx == CTRL_GEAR0_HI, "慢速档满杆 -> 400（档位上限）");
+        CHECK(cmd.vx == CTRL_GEAR0_HI, "慢速档满杆 -> 300（档位上限）");
         p.left_y = 0x80;
 
         /* 升到快速档：满杆 = 1000 */
@@ -474,7 +474,8 @@ int main(void)
         p.buttons = 0xFFFF;
         p.left_y = 0x00;
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vx == CTRL_GEAR2_HI, "快速档满杆 -> 1000");
+        CHECK(cmd.vx == CTRL_GEAR2_HI && CTRL_GEAR2_HI == CTRL_DUTY_CAP,
+              "快速档满杆 -> 920（全局占空比上限 92%，不再给到 100%）");
         p.left_y = 0x80;
 
         /* --- 左摇杆 X：原地自转（纯旋转，绕底盘中心） --- */
@@ -485,7 +486,7 @@ int main(void)
         p.left_x = 0x00;                                   /* 推左 */
         (void)Ctrl_Update(&p, 1, &cmd);
         CHECK(cmd.vx == 0 && cmd.vy == 0 && cmd.vw != 0, "左摇杆推左 -> 纯原地自转（vx=vy=0）");
-        CHECK(cmd.vw == -CTRL_GEAR1_HI, "自转受档位限制（中速档 = -700）");
+        CHECK(cmd.vw == -CTRL_GEAR1_HI, "自转受档位限制（中速档 = -600）");
         p.left_x = 0xFF;                                   /* 推右 */
         (void)Ctrl_Update(&p, 1, &cmd);
         CHECK(cmd.vw == CTRL_GEAR1_HI, "左摇杆推右 -> 反向自转");
@@ -566,7 +567,7 @@ int main(void)
         p.left_x = 0x00; p.right_x = 0x80;                  /* 只推左摇杆 X：自转 */
         (void)Ctrl_Update(&p, 1, &cmd);
         CHECK(cmd.vw == -CTRL_GEAR0_HI && cmd.limit == CTRL_GEAR0_HI,
-              "慢速档自转 -> 400（与平移一致，受档位限制）");
+              "慢速档自转 -> 300（与平移一致，受档位限制）");
         p.left_x = 0x80;
 
         p.right_x = 0x00;                                   /* 只推右摇杆 X：绕后轮 */
@@ -625,10 +626,25 @@ int main(void)
               "CCR1/CCR2 已写入上电默认脉宽");
         CHECK(SERVO0_MAX_US - SERVO0_MIN_US >= 2000,
               "关节舵机行程 >= 2000us（足够转到 180°）");
-        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == 1500,
-              "机械爪上电停在中位 1500us（安全起点，避免顶死堵转）");
-        CHECK(SERVO2_MAX_US - SERVO2_MIN_US <= 400,
-              "机械爪默认给窄行程占位（校准前先避免顶到机械限位）");
+        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == 1000,
+              "机械爪上电停在 1000us（45° 半开，避开两端死点）");
+        CHECK(SERVO2_MIN_US == 500 && SERVO2_MAX_US == 1500,
+              "机械爪行程 = 0°~90°（500us 全闭 ~ 1500us 全开）");
+
+        /* 角度接口：机械爪 0=全闭、90=全开；关节 0~180 */
+        Servo_SetAngle(SERVO_CH_GRIPPER, 0);
+        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == 500, "爪 0° -> 500us（完全闭合）");
+        Servo_SetAngle(SERVO_CH_GRIPPER, 90);
+        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == 1500, "爪 90° -> 1500us（完全张开）");
+        Servo_SetAngle(SERVO_CH_GRIPPER, 45);
+        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == 1000, "爪 45° -> 1000us（半开）");
+        Servo_SetAngle(SERVO_CH_GRIPPER, 200);
+        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == 1500, "角度超范围 -> 限幅到 90°");
+        Servo_SetAngle(SERVO_CH_JOINT1, 180);
+        CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == 2500, "关节 180° -> 2500us");
+        Servo_SetAngle(SERVO_CH_JOINT1, 90);
+        CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == 1500, "关节 90° -> 1500us");
+        Servo_Init();
 
         /* 限幅 */
         Servo_SetPulse(SERVO_CH_JOINT1, 300);
