@@ -37,10 +37,14 @@ add_executable(${CMAKE_PROJECT_NAME}
         USER/motor.c
         USER/rc.c
         USER/control.c
+        USER/led.c
+        USER/servo.c
         USER/motor.h
         USER/ps2.h
         USER/rc.h
         USER/control.h
+        USER/led.h
+        USER/servo.h
 )
 
 # Add STM32CubeMX generated sources

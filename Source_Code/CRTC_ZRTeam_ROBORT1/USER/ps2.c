@@ -8,9 +8,10 @@
 // ===== 调试可观测变量 =====
 volatile PS2_Debug_t g_ps2_dbg = {0};
 
-// 连续失败计数 / 重配置重入保护
-static uint8_t s_fail_streak = 0;
-static uint8_t s_in_config   = 0;
+// 连续失败计数 / 重配置重入保护 / 上次重配置时刻
+static uint8_t  s_fail_streak = 0;
+static uint8_t  s_in_config   = 0;
+static uint32_t s_last_cfg_ms = 0;
 
 // 振动状态：必须在每次轮询包里持续发送，否则手柄会在一个周期内把它清掉
 static uint8_t s_rumble_small = 0;
@@ -119,6 +120,21 @@ static void PS2_EnterAnalogMode(void)
     s_in_config = 0;
 }
 
+// ===== 限速地重新进入模拟模式 =====
+// 用途：手柄自己掉出模拟模式（id=0x41 绿灯，多键连按时常见）、或读取连续失败时，
+//       自动把它拉回红灯模式，操作手不用去按手柄上的 ANALOG 键。
+static void ps2_restore_analog(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    if ((uint32_t)(now - s_last_cfg_ms) < PS2_RECONFIG_INTERVAL_MS)
+        return;                                  // 限速，避免每 10ms 都发配置包
+
+    s_last_cfg_ms = now;
+    g_ps2_dbg.mode_recover_count++;
+    PS2_EnterAnalogMode();
+}
+
 // ===== 初始化：进入并确认模拟（红灯）模式 =====
 void PS2_Init(void)
 {
@@ -127,6 +143,7 @@ void PS2_Init(void)
     // 清除上一次通信的残留：失败计数、调试缓存里的旧包
     s_fail_streak = 0;
     s_in_config   = 0;
+    s_last_cfg_ms = HAL_GetTick();
     for (uint8_t i = 0; i < 9; i++)
         g_ps2_dbg.raw[i] = 0x00;
     g_ps2_dbg.id    = 0x00;
@@ -195,7 +212,7 @@ uint8_t PS2_ReadData(PS2_Data_t *data)
         {
             s_fail_streak = 0;
             g_ps2_dbg.reconfig_count++;
-            PS2_EnterAnalogMode();
+            ps2_restore_analog();
         }
 
         data->left_x  = 0x80;
@@ -217,6 +234,13 @@ uint8_t PS2_ReadData(PS2_Data_t *data)
     data->mode    = ((id & 0xF0) == 0x70) ? 1 : 0;
     // 按键字节序：buf[3] 是低字节、buf[4] 是高字节（PS2X: (PS2data[4]<<8)+PS2data[3]）
     data->buttons = (uint16_t)(((uint16_t)buf[4] << 8) | buf[3]);
+
+    if (!data->mode)
+    {
+        // 掉出模拟模式（多键连按/接收器干扰时常见）：自动重发配置序列把它拉回红灯模式，
+        // 操作手不用去按手柄上的 ANALOG 键。限速在 ps2_restore_analog() 内部。
+        ps2_restore_analog();
+    }
 
     if (data->mode)
     {

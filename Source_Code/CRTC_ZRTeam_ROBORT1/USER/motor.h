@@ -29,6 +29,7 @@ void Motor_SetPWM(uint8_t motor, int16_t speed);
 void Motor_StopAll(void);
 void Motor_BrakeAll(void);
 void Mecanum_Move(int16_t vx, int16_t vy, int16_t vw);
+void Mecanum_MoveLimit(int16_t vx, int16_t vy, int16_t vw, int16_t limit);
 
 #if MOTOR_SELFTEST_ENABLE
 void Motor_SelfTest(void);

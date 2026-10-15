@@ -27,6 +27,8 @@
 #include "motor.h"
 #include "rc.h"
 #include "control.h"
+#include "led.h"
+#include "servo.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -98,6 +100,9 @@ int main(void)
   Motor_Init();
   Bringup_Halt(6);
 
+  LED_Init();          // 档位指示 LED：PA8=慢 PA11=中 PA12=快
+  Servo_Init();        // 舵机 PWM：TIM3 (PA6/PA7/PB0/PB1)，50Hz
+  Ctrl_Init();
   RC_Init();
 
   PS2_Data_t ps2;
@@ -112,28 +117,48 @@ int main(void)
     {
       last_read = HAL_GetTick();
 
-      // 三重条件：读到数据 && 处于红灯(模拟)模式 && 失联保护未触发
-      if (PS2_ReadData(&ps2) && ps2.mode == 1 && RC_Feed(&ps2))
+      if (PS2_ReadData(&ps2))
       {
         Ctrl_Output_t cmd;
 
-        // 手柄 -> 底盘速度指令（映射与优先级见 USER/control.h）
-        if (Ctrl_Update(&ps2, 1, &cmd))
+        if (ps2.mode == 1)
         {
-          if (cmd.brake)
-            Motor_BrakeAll();                      // ✕：真刹车
+          /* 红灯(模拟)模式：舵机 + 底盘 */
+          uint8_t enabled = RC_Feed(&ps2);          // 失联保护/安全启动
+
+          Servo_Task(ps2.buttons);
+
+          if (Ctrl_Update(&ps2, enabled, &cmd))
+          {
+            if (cmd.brake)
+              Motor_BrakeAll();                     // SELECT：真刹车
+            else
+              Mecanum_MoveLimit(cmd.vx, cmd.vy, cmd.vw, cmd.limit);  // 按档位限幅
+          }
           else
-            Mecanum_Move(cmd.vx, cmd.vy, cmd.vw);  // 摇杆/方向键/△
+          {
+            Motor_StopAll();
+          }
+
+          LED_SetGear(cmd.gear);                    // 档位指示
         }
         else
         {
+          /* 掉出模拟模式（绿灯）：驱动会自动重发配置把它拉回红灯模式；
+             这里停车并强制重新安全启动，避免拉回瞬间窜车 */
+          Servo_Task(ps2.buttons);
           Motor_StopAll();
+          RC_ForceReArm();
+
+          (void)Ctrl_Update(&ps2, 0, &cmd);         // 仅为刷新档位显示
+          LED_SetGear(cmd.gear);
         }
       }
       else
       {
-        // 通信失败 / 绿灯(数字)模式 / 失联保护：停止所有电机（安全保护）
+        /* 通信失败：停车并强制重新安全启动 */
         Motor_StopAll();
+        RC_ForceReArm();
       }
     }
     /* USER CODE END WHILE */

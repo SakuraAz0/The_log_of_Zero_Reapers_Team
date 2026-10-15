@@ -33,6 +33,18 @@ void RC_Init(void)
         g_rc_dbg.last[i] = 0;
 }
 
+// 强制退回安全启动状态（保留累计统计计数，不清零 ok/fail/reject）
+void RC_ForceReArm(void)
+{
+    s_armed       = 0;
+    s_arm_started = 0;
+    s_has_last    = 0;
+
+    g_rc_dbg.armed        = 0;
+    g_rc_dbg.stale        = 0;
+    g_rc_dbg.unchanged_ms = 0;
+}
+
 // 数据是否合理：接收器欠压/失联时常见的"四轴全 0x00 或全 0xFF"要拒绝
 static uint8_t rc_payload_valid(const PS2_Data_t *d)
 {

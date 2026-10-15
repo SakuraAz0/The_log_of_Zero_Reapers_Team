@@ -38,6 +38,9 @@ typedef struct {
 extern volatile RC_Debug_t g_rc_dbg;
 
 void    RC_Init(void);
+// 强制退回"安全启动"：手柄掉出模拟模式、通信中断、或重新连上后调用，
+// 这样恢复瞬间必须重新满足"摇杆回中 200ms"才允许驱动，避免突然窜车。
+void    RC_ForceReArm(void);
 // 每轮读到有效手柄数据后调用：返回 1 = 允许驱动，0 = 应立即停车
 uint8_t RC_Feed(const PS2_Data_t *data);
 

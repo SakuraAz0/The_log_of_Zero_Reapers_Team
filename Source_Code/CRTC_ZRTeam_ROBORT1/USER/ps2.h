@@ -29,6 +29,8 @@
 #define PS2_PKT_DELAY_US       1000
 // 连续读取失败多少次后自动重发配置序列（10ms 轮询下 50 次 ≈ 0.5s）
 #define PS2_RECONFIG_FAILS     50
+// 两次"自动拉回模拟模式"的最小间隔（掉出模拟模式/连续失败时用）
+#define PS2_RECONFIG_INTERVAL_MS  500U
 // 上电后等待手柄/接收器稳定
 #define PS2_BOOT_DELAY_MS      50
 // 是否在配置序列里开启振动功能（用不到振动或无线接收器异常时改为 0；也可用 -D 覆盖）
@@ -76,7 +78,8 @@ typedef struct {
     uint8_t  init_ok;       // PS2_Init 是否成功进入模拟模式
     uint32_t ok_count;      // 有效包计数
     uint32_t fail_count;    // 无效包计数
-    uint32_t reconfig_count;// 自动重配置次数
+    uint32_t reconfig_count;// 自动重配置次数（连续失败触发）
+    uint32_t mode_recover_count; // 掉出模拟模式后被自动拉回的次数
 } PS2_Debug_t;
 
 extern volatile PS2_Debug_t g_ps2_dbg;

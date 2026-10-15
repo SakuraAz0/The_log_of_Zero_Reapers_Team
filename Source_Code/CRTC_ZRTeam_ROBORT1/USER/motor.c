@@ -10,12 +10,10 @@
 // 右后：PB8(TIM4_CH3) / PB9(TIM4_CH4)
 
 // ===== 标定宏 =====
-// 麦轮：若实测"左右平移"或"原地旋转"方向相反，把对应宏改成 (-1)，不用改公式
-#define MECANUM_STRAFE_SIGN  (+1)
-#define MECANUM_ROTATE_SIGN  (+1)
-
 // 单轮方向：TT 马达左右镜像安装时，同一接线往往一侧正转另一侧反转。
 // 哪个轮子方向反了，就把对应宏改成 (-1)（也可以在接线/驱动端对调该马达两根线）
+// 注：麦轮整体的"前后/旋转/绕转"方向标定已统一挪到 USER/control.h 的 CTRL_*_SIGN，
+//     这里不再放 MECANUM_*_SIGN（控制层的绕后轮推导依赖本文件的 vy/vw 系数约定）。
 #define MOTOR_SIGN_LF  (+1)
 #define MOTOR_SIGN_LR  (+1)
 #define MOTOR_SIGN_RF  (+1)
@@ -125,37 +123,42 @@ void Motor_BrakeAll(void)
 // ===== 麦轮运动学逆解（标准 X 型布局）=====
 // vx: 前后平移（正=前进），vy: 左右平移，vw: 旋转
 // 判据：前进时四个轮子必须同向；左右平移为对角配对；旋转为左右两侧反向
-// 若实测左右/旋转相反，改上面的 MECANUM_STRAFE_SIGN / MECANUM_ROTATE_SIGN 即可
-void Mecanum_Move(int16_t vx, int16_t vy, int16_t vw)
+//
+// 注意：这里**不再放方向标定宏**。控制层（control.c）的"绕后轮旋转"是按本函数的
+//       vy/vw 系数约定推导出来的，任何在这里翻转 vy/vw 符号的做法都会破坏那个推导。
+//       方向标定统一在 USER/control.h 的 CTRL_*_SIGN 宏里做。
+//
+// limit: 四轮输出上限（等比缩放，保持四轮比例 = 不改变运动方向）
+static void mecanum_apply(int16_t vx, int16_t vy, int16_t vw, int16_t limit)
 {
     int16_t speed_lf, speed_lr, speed_rf, speed_rr;
-    int16_t vy_s = (int16_t)(vy * MECANUM_STRAFE_SIGN);
-    int16_t vw_s = (int16_t)(vw * MECANUM_ROTATE_SIGN);
+
+    if (limit <= 0)    limit = 1;
+    if (limit > 1000)  limit = 1000;
 
     // 逆运动学解算
     // 注意：vx 的系数必须四个轮子全为 +1，否则"前进"会变成对角差速（原地打转/斜移）
-    speed_lf =  vx + vy_s + vw_s;   // 左前
-    speed_rf =  vx - vy_s - vw_s;   // 右前
-    speed_lr =  vx - vy_s + vw_s;   // 左后
-    speed_rr =  vx + vy_s - vw_s;   // 右后
+    speed_lf =  vx + vy + vw;   // 左前
+    speed_rf =  vx - vy - vw;   // 右前
+    speed_lr =  vx - vy + vw;   // 左后
+    speed_rr =  vx + vy - vw;   // 右后
 
     // 饱和处理：任一轴超程时按最大绝对值等比缩小，保证运动方向不变
     // （逐轮单独限幅会改变四轮比例，导致斜移/旋转时方向畸变）
-    const int16_t max_val = 1000;
     int16_t vals[4] = {speed_lf, speed_lr, speed_rf, speed_rr};
     int16_t peak = 0;
     for (uint8_t i = 0; i < 4; i++) {
         int16_t a = (vals[i] < 0) ? (int16_t)(-vals[i]) : vals[i];
         if (a > peak) peak = a;
     }
-    if (peak > max_val) {
+    if (peak > limit) {
         for (uint8_t i = 0; i < 4; i++)
-            vals[i] = (int16_t)((int32_t)vals[i] * max_val / peak);
+            vals[i] = (int16_t)((int32_t)vals[i] * limit / peak);
     }
     // 兜底限幅
     for (uint8_t i = 0; i < 4; i++) {
-        if (vals[i] > max_val)  vals[i] = max_val;
-        if (vals[i] < -max_val) vals[i] = -max_val;
+        if (vals[i] > limit)  vals[i] = limit;
+        if (vals[i] < -limit) vals[i] = -limit;
     }
 
     // 设置四个电机
@@ -163,6 +166,17 @@ void Mecanum_Move(int16_t vx, int16_t vy, int16_t vw)
     Motor_SetPWM(MOTOR_LR, vals[1]);
     Motor_SetPWM(MOTOR_RF, vals[2]);
     Motor_SetPWM(MOTOR_RR, vals[3]);
+}
+
+void Mecanum_Move(int16_t vx, int16_t vy, int16_t vw)
+{
+    mecanum_apply(vx, vy, vw, 1000);
+}
+
+// 带输出上限的版本：用于"档位"限幅（四轮等比缩放到 limit 以内）
+void Mecanum_MoveLimit(int16_t vx, int16_t vy, int16_t vw, int16_t limit)
+{
+    mecanum_apply(vx, vy, vw, limit);
 }
 
 // ===== 四轮接线自检（由 MOTOR_SELFTEST_ENABLE 控制）=====

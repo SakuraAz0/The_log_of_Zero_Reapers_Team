@@ -20,6 +20,8 @@
 #include "motor.h"
 #include "rc.h"
 #include "control.h"
+#include "led.h"
+#include "servo.h"
 
 /* ================= 伪造内核调试单元 ================= */
 static DWT_Type       g_fake_dwt;
@@ -28,6 +30,15 @@ static CoreDebug_Type g_fake_coredebug;
 #define DWT (&g_fake_dwt)
 #undef CoreDebug
 #define CoreDebug (&g_fake_coredebug)
+
+/* ================= 伪造 RCC / TIM3（servo.c、led.c 会直接写寄存器）================= */
+static RCC_TypeDef g_fake_rcc;
+#undef RCC
+#define RCC (&g_fake_rcc)
+
+static TIM_TypeDef g_fake_tim3;
+#undef TIM3
+#define TIM3 (&g_fake_tim3)
 
 uint32_t SystemCoreClock = 0U;   /* =0 使 delay_us() 的 ticks 为 0，立即返回 */
 
@@ -110,10 +121,17 @@ static void pad_on_clk_falling(void)
 }
 
 /* ================= HAL 桩 ================= */
+static uint16_t s_gpio_a_odr = 0;    /* 记录 PA 口输出（档位 LED 用） */
+
 void HAL_GPIO_WritePin(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin, GPIO_PinState PinState)
 {
-    (void)GPIOx;
     int v = (PinState == GPIO_PIN_RESET) ? 0 : 1;
+
+    if (GPIOx == GPIOA) {            /* 档位 LED：PA8/PA11/PA12 */
+        if (v) s_gpio_a_odr |= GPIO_Pin;
+        else   s_gpio_a_odr &= (uint16_t)~GPIO_Pin;
+        return;
+    }
 
     switch (GPIO_Pin) {
     case PIN_CS:
@@ -128,6 +146,11 @@ void HAL_GPIO_WritePin(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin, GPIO_PinState Pin
     default:
         break;
     }
+}
+
+void HAL_GPIO_Init(GPIO_TypeDef *GPIOx, GPIO_InitTypeDef *GPIO_Init)
+{
+    (void)GPIOx; (void)GPIO_Init;
 }
 
 GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin)
@@ -152,6 +175,19 @@ uint32_t HAL_GetTick(void) { return s_tick; }
 #include "../USER/motor.c"
 #include "../USER/rc.c"
 #include "../USER/control.c"
+#include "../USER/led.c"
+#include "../USER/servo.c"
+
+/* 麦轮逆解参考实现（仅供测试校验用） */
+static int16_t wheel_cmd(int16_t vx, int16_t vy, int16_t vw, int which)
+{
+    switch (which) {
+    case 0:  return (int16_t)(vx + vy + vw);   /* LF */
+    case 1:  return (int16_t)(vx - vy + vw);   /* LR */
+    case 2:  return (int16_t)(vx - vy - vw);   /* RF */
+    default: return (int16_t)(vx + vy - vw);   /* RR */
+    }
+}
 
 /* ================= 测试框架 ================= */
 static int g_pass = 0, g_fail = 0;
@@ -355,114 +391,173 @@ int main(void)
     s_tick = 0x00000100u;                              /* 相对上次 +266ms，未到 1000ms */
     CHECK(RC_Feed(&d) == 1, "tick 回绕后按无符号差值计算，不误触发保护");
 
-    /* ---------- 7. 遥控映射（control.c） ---------- */
-    printf("[7] 遥控映射\n");
+    /* ---------- 7. 遥控映射 v2：档位 / 绕对侧后轮 / 差速 ---------- */
+    printf("[7] 遥控映射 v2\n");
     {
         Ctrl_Output_t cmd;
         PS2_Data_t p;
-        int16_t exp_rear_vy;
 
         memset(&p, 0, sizeof p);
         p.mode = 1;
         p.left_x = p.left_y = p.right_x = p.right_y = 0x80;   /* 摇杆回中 */
         p.buttons = 0xFFFF;                                   /* 无按键（低有效） */
 
-        CHECK(Ctrl_Update(&p, 0, &cmd) == 0, "未使能 -> 不允许驱动");
-        CHECK(cmd.brake == 0 && cmd.vx == 0 && cmd.vy == 0 && cmd.vw == 0, "未使能 -> 指令全 0");
+        Ctrl_Init();                     /* 档位回 0（慢速） */
+        s_tick = 5000;                   /* 远离 0，脱离换档锁定期 */
+
+        CHECK(Ctrl_Update(&p, 0, &cmd) == 0 && cmd.vx == 0, "未使能 -> 不驱动");
+        CHECK(cmd.gear == 0, "默认档位 = 0（慢速）");
 
         p.mode = 0;
-        CHECK(Ctrl_Update(&p, 1, &cmd) == 0, "绿灯(数字)模式 -> 不允许驱动");
+        CHECK(Ctrl_Update(&p, 1, &cmd) == 0, "绿灯(数字)模式 -> 不驱动");
         p.mode = 1;
 
-        CHECK(Ctrl_Update(&p, 1, &cmd) == 1, "使能 -> 允许驱动");
-        CHECK(cmd.mode == CTRL_MODE_STICK && cmd.vx == 0 && cmd.vy == 0 && cmd.vw == 0,
-              "摇杆回中 -> 速度为 0");
+        /* --- 档位：△ 加档 / ✕ 减档（边沿触发 + 去抖） --- */
+        p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE);
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.gear == 1, "按 △ 一次 -> 档位 1（中速）");
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.gear == 1, "按住 △ 不重复加档（边沿触发）");
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.buttons = 0xFFFF; (void)Ctrl_Update(&p, 1, &cmd);   /* 松手 */
+        p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE);
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.gear == 2, "再按 △ -> 档位 2（快速）");
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.buttons = 0xFFFF; (void)Ctrl_Update(&p, 1, &cmd);
+        p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE);
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.gear == 2, "到最高档后不再增加");
 
-        /* 左摇杆 Y：推前应得到 vx>0（原代码此处反向） */
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.buttons = 0xFFFF; (void)Ctrl_Update(&p, 1, &cmd);
+        p.buttons = (uint16_t)(~PS2_BTN_CROSS);
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.gear == 1 && cmd.brake == 0, "✕ 现在是减档（不再制动）");
+
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.buttons = 0xFFFF; (void)Ctrl_Update(&p, 1, &cmd);
+        p.buttons = (uint16_t)(~PS2_BTN_SELECT);
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.mode == CTRL_MODE_BRAKE && cmd.brake == 1, "SELECT -> 制动");
+        p.buttons = 0xFFFF;
+
+        /* --- 档位内的速度映射 --- */
+        Ctrl_Init();
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.left_y = 0x00;                                   /* 左摇杆满杆推前 */
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.vx == CTRL_GEAR0_HI, "慢速档满杆 -> 400（档位上限）");
+
+        /* 抬到中速档 */
+        p.left_y = 0x80;
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE); (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.gear == 1, "抬到中速档");
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.buttons = 0xFFFF;
         p.left_y = 0x00;
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vx > 900, "左摇杆推前 -> vx 为正且接近满速（极性已修正）");
-        p.left_y = 0xFF;
+        CHECK(cmd.vx == CTRL_GEAR1_HI, "中速档满杆 -> 700（档位上限）");
+        p.left_y = 59;                                     /* 约半杆 */
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vx < -900, "左摇杆拉后 -> vx 为负");
-
-        /* 死区 */
-        p.left_y = 120;                                       /* 偏移 7，小于死区 */
-        (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vx == 0, "死区内 -> 速度为 0");
+        CHECK(cmd.vx > CTRL_GEAR1_LO && cmd.vx < CTRL_GEAR1_HI,
+              "中速档半杆 -> 落在 40%~70% 区间内");
         p.left_y = 0x80;
 
-        /* 左摇杆 X：原地自转 */
-        p.left_x = 0x00;                                      /* 推左 */
+        /* 极限：快速档满杆 = 1000 */
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE); (void)Ctrl_Update(&p, 1, &cmd);
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.buttons = 0xFFFF;
+        p.left_y = 0x00;
         (void)Ctrl_Update(&p, 1, &cmd);
-#if CTRL_LEFT_X_IS_ROTATE
-        CHECK(cmd.vw < -900 && cmd.vy == 0, "左摇杆推左 -> 原地自转（vw 负）");
+        CHECK(cmd.gear == 2 && cmd.vx == CTRL_GEAR2_HI, "快速档满杆 -> 1000");
+        p.left_y = 0x80;
+
+        /* --- 左摇杆 X：绕"对侧"后轮（推左 -> 绕右后轮；推右 -> 绕左后轮） --- */
+        Ctrl_Init();
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        /* 用中速档（hi=700）测几何 */
+        p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE); (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.gear == 1, "几何测试用中速档");
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.buttons = 0xFFFF;
+
+        p.left_x = 0x00;                                   /* 推左 */
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.vw != 0 && cmd.vy != 0 && cmd.vx != 0, "推左 -> 产生 vx/vy/vw 组合（不是纯自转）");
+#if CTRL_PIVOT_OPPOSITE_SIDE
+        CHECK(wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 3) >= -2 &&
+              wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 3) <= 2,
+              "推左 -> 右后轮指令为 0（绕右后轮，对侧）");
 #else
-        CHECK(cmd.vy < -900, "左摇杆推左 -> 向左平移");
+        CHECK(wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 1) >= -2 &&
+              wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 1) <= 2,
+              "推左 -> 左后轮指令为 0（绕左后轮，同侧）");
+#endif
+
+        p.left_x = 0xFF;                                   /* 推右 */
+        (void)Ctrl_Update(&p, 1, &cmd);
+#if CTRL_PIVOT_OPPOSITE_SIDE
+        CHECK(wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 1) >= -2 &&
+              wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 1) <= 2,
+              "推右 -> 左后轮指令为 0（绕左后轮，对侧）");
+#else
+        CHECK(wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 3) >= -2 &&
+              wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 3) <= 2,
+              "推右 -> 右后轮指令为 0（绕右后轮，同侧）");
 #endif
         p.left_x = 0x80;
 
-        /* 右摇杆 Y：前后各绕一侧轮组 */
-        p.right_y = 0x00;                                     /* 推前 */
+        /* --- 右摇杆 Y：两侧差速（左快右慢 / 右快左慢），受档位限幅 --- */
+        p.left_y = 0x00;                                   /* 前进满杆 */
+        p.right_y = 0x00;                                  /* 推前 */
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vx > 400 && cmd.vw > 400 && cmd.vy == 0, "右摇杆推前 -> vx/vw 同为正（半量）");
+        CHECK(cmd.vw > 0, "右摇杆推前 -> 旋转量为正（左轮加速、右轮减速）");
         Motor_StopAll();
-        Mecanum_Move(cmd.vx, cmd.vy, cmd.vw);
-        CHECK(g_fake_tim2.CCR1 > 0 && g_fake_tim2.CCR3 > 0 &&
-              g_fake_tim4.CCR1 == 0 && g_fake_tim4.CCR2 == 0 &&
-              g_fake_tim4.CCR3 == 0 && g_fake_tim4.CCR4 == 0,
-              "推前 -> 左轮组驱动、右轮组为 0（绕右侧）");
+        Mecanum_MoveLimit(cmd.vx, cmd.vy, cmd.vw, cmd.limit);
+        CHECK(g_fake_tim2.CCR1 == (uint32_t)cmd.limit && g_fake_tim4.CCR1 > 0 &&
+              g_fake_tim4.CCR1 < g_fake_tim2.CCR1,
+              "差速左转弯：左前轮 = 档位上限、右前轮更慢");
 
-        p.right_y = 0xFF;                                     /* 拉后 */
+        p.right_y = 0xFF;                                  /* 拉后 */
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vx < -400 && cmd.vw > 400, "右摇杆拉后 -> vx 负、vw 仍为正（换到另一侧）");
+        CHECK(cmd.vw < 0, "右摇杆拉后 -> 旋转量为负（右轮加速、左轮减速）");
         Motor_StopAll();
-        Mecanum_Move(cmd.vx, cmd.vy, cmd.vw);
-        CHECK(g_fake_tim2.CCR1 == 0 && g_fake_tim2.CCR2 == 0 &&
-              g_fake_tim2.CCR3 == 0 && g_fake_tim2.CCR4 == 0 &&
-              g_fake_tim4.CCR2 > 0 && g_fake_tim4.CCR4 > 0,
-              "拉后 -> 右轮组后退、左轮组为 0（绕左侧）");
+        Mecanum_MoveLimit(cmd.vx, cmd.vy, cmd.vw, cmd.limit);
+        CHECK(g_fake_tim4.CCR1 == (uint32_t)cmd.limit && g_fake_tim2.CCR1 < g_fake_tim4.CCR1,
+              "差速右转弯：右前轮 = 档位上限、左前轮更慢");
         p.right_y = 0x80;
 
-        /* 右摇杆 X：绕尾部中点（含几何平移补偿） */
-        exp_rear_vy = (int16_t)(CTRL_REAR_COMP_SIGN * (int32_t)1000 *
-                                CTRL_REAR_ARM_MM / (CTRL_HALF_LEN_MM + CTRL_HALF_WID_MM));
-        p.right_x = 0xFF;
+        /* --- 档位限幅：所有输出都不超过当前档位上限 --- */
+        Ctrl_Init();
+        s_tick += CTRL_GEAR_LOCKOUT_MS;
+        p.left_y = 0x00; p.left_x = 0x00; p.right_y = 0x00;   /* 前进+绕转 同时满杆 */
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vw > 900, "右摇杆推右 -> 旋转 vw 正");
-        CHECK(cmd.vy == exp_rear_vy && exp_rear_vy != 0,
-              "绕尾部中点 -> 附加横向补偿 vy = vw*L/(lx+ly)");
-        p.right_x = 0x80;
+        Motor_StopAll();
+        Mecanum_MoveLimit(cmd.vx, cmd.vy, cmd.vw, cmd.limit);
+        {
+            uint32_t m = g_fake_tim2.CCR1;
+            if (g_fake_tim2.CCR2 > m) m = g_fake_tim2.CCR2;
+            if (g_fake_tim2.CCR3 > m) m = g_fake_tim2.CCR3;
+            if (g_fake_tim2.CCR4 > m) m = g_fake_tim2.CCR4;
+            if (g_fake_tim4.CCR1 > m) m = g_fake_tim4.CCR1;
+            if (g_fake_tim4.CCR2 > m) m = g_fake_tim4.CCR2;
+            if (g_fake_tim4.CCR3 > m) m = g_fake_tim4.CCR3;
+            if (g_fake_tim4.CCR4 > m) m = g_fake_tim4.CCR4;
+            CHECK(m <= (uint32_t)CTRL_GEAR0_HI, "慢速档下多轴满杆 -> 四轮都不超过 400");
+        }
+        p.left_y = 0x80; p.left_x = 0x80;
 
-        /* 方向键 70% */
-        p.buttons = (uint16_t)(~PS2_BTN_UP);
-        (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.mode == CTRL_MODE_DPAD && cmd.vx == CTRL_DPAD_SPEED && cmd.vy == 0,
-              "方向键上 -> 70% 前进");
-        p.buttons = (uint16_t)(~(PS2_BTN_UP | PS2_BTN_LEFT));
-        (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vx == CTRL_DPAD_SPEED && cmd.vy == -CTRL_DPAD_SPEED, "方向键上+左 -> 70% 斜向");
-        p.buttons = (uint16_t)(~PS2_BTN_DOWN);
-        (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vx == -CTRL_DPAD_SPEED, "方向键下 -> 70% 后退");
-
-        /* △ 全速前进 / ✕ 刹车 / 优先级 */
-        p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE);
-        (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.mode == CTRL_MODE_FULL_FWD && cmd.vx == CTRL_MAX_SPEED, "△ -> 全速前进");
-
-        p.buttons = (uint16_t)(~PS2_BTN_CROSS);
-        (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.mode == CTRL_MODE_BRAKE && cmd.brake == 1, "✕ -> 制动");
-
-        p.buttons = (uint16_t)(~(PS2_BTN_CROSS | PS2_BTN_TRIANGLE | PS2_BTN_UP));
-        (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.mode == CTRL_MODE_BRAKE, "优先级：✕ 高于 △ 与方向键");
-
-        p.buttons = (uint16_t)(~(PS2_BTN_TRIANGLE | PS2_BTN_UP));
-        (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.mode == CTRL_MODE_FULL_FWD, "优先级：△ 高于方向键");
-        p.buttons = 0xFFFF;
+        /* --- 档位 LED --- */
+        s_gpio_a_odr = 0;
+        LED_SetGear(0);
+        CHECK((s_gpio_a_odr & LED_PIN_SLOW) != 0 && (s_gpio_a_odr & LED_PIN_MID) == 0, "档位 0 -> 只亮慢速 LED");
+        LED_SetGear(1);
+        CHECK((s_gpio_a_odr & LED_PIN_MID) != 0 && (s_gpio_a_odr & LED_PIN_SLOW) == 0, "档位 1 -> 只亮中速 LED");
+        LED_SetGear(2);
+        CHECK((s_gpio_a_odr & LED_PIN_FAST) != 0 && (s_gpio_a_odr & LED_PIN_MID) == 0, "档位 2 -> 只亮快速 LED");
     }
 
     /* 刹车输出：DRV8833 双输入 100% */
@@ -478,6 +573,90 @@ int main(void)
 #else
     CHECK(g_fake_tim2.CCR1 == 0 && g_fake_tim4.CCR1 == 0, "刹车方式=滑行 -> 全部为 0");
 #endif
+
+    /* ---------- 8. 舵机（TIM3，50Hz） ---------- */
+    printf("[8] 舵机\n");
+    {
+        Servo_Init();
+        CHECK(g_fake_tim3.PSC == 71 && g_fake_tim3.ARR == 19999,
+              "TIM3 时基 = 1MHz / 20000 -> 50Hz");
+        CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == SERVO_DEFAULT_US &&
+              Servo_GetPulse(SERVO_CH_JOINT2) == SERVO_DEFAULT_US,
+              "上电两路关节舵机在中位 1500us");
+        CHECK(g_fake_tim3.CCR1 == SERVO_DEFAULT_US && g_fake_tim3.CCR2 == SERVO_DEFAULT_US,
+              "CCR1/CCR2 已写入中位脉宽");
+
+        /* 限幅 */
+        Servo_SetPulse(SERVO_CH_JOINT1, 300);
+        CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == SERVO0_MIN_US, "低于下限 -> 限幅到 MIN");
+        Servo_SetPulse(SERVO_CH_JOINT1, 3000);
+        CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == SERVO0_MAX_US, "高于上限 -> 限幅到 MAX");
+
+        /* 关节舵机：L1 增 / L2 减，按 slew 逐步移动 */
+        Servo_Init();
+        {
+            uint16_t p0 = Servo_GetPulse(SERVO_CH_JOINT1);
+            for (int i = 0; i < 5; i++) Servo_Task((uint16_t)(~PS2_BTN_L1));
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == (uint16_t)(p0 + 5 * SERVO_SLEW_US_PER_TICK),
+                  "按住 L1 -> 关节舵机1 逐帧增加（slew 限速）");
+            for (int i = 0; i < 5; i++) Servo_Task((uint16_t)(~PS2_BTN_L2));
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == p0, "按住 L2 -> 回到原位");
+            CHECK(g_fake_tim3.CCR1 == Servo_GetPulse(SERVO_CH_JOINT1),
+                  "TIM3->CCR1 与实际脉宽一致");
+        }
+
+        /* 关节舵机2：R1 / R2 */
+        Servo_Init();
+        {
+            uint16_t p0 = Servo_GetPulse(SERVO_CH_JOINT2);
+            for (int i = 0; i < 5; i++) Servo_Task((uint16_t)(~PS2_BTN_R1));
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT2) == (uint16_t)(p0 + 5 * SERVO_SLEW_US_PER_TICK),
+                  "按住 R1 -> 关节舵机2 增加");
+            for (int i = 0; i < 5; i++) Servo_Task((uint16_t)(~PS2_BTN_R2));
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT2) == p0, "按住 R2 -> 回到原位");
+        }
+
+        /* 机械爪：□ 张开 / ○ 合拢 */
+        Servo_Init();
+        for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_SQUARE));
+        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_OPEN_US, "按住 □ -> 机械爪张开到位");
+        CHECK(g_fake_tim3.CCR3 == SERVO_GRIP_OPEN_US, "机械爪 CCR3 同步更新");
+        for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_CIRCLE));
+        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_CLOSE_US, "按住 ○ -> 机械爪合拢到位");
+    }
+
+    /* ---------- 9. 掉出模拟模式自动拉回 ---------- */
+    printf("[9] 掉出模拟模式自动拉回\n");
+    {
+        PS2_Data_t d;
+        uint32_t c1;
+
+        reset_pad();
+        pad_id = 0x73;
+        s_tick = 0x7FFFFFFFu;
+        (void)PS2_ReadData(&d);
+        c1 = g_ps2_dbg.mode_recover_count;
+
+        pad_id = 0x41;                                  /* 手柄掉到数字(绿灯)模式 */
+        (void)PS2_ReadData(&d);
+        CHECK(d.mode == 0, "掉出模拟模式 -> mode=0（停车）");
+        CHECK(g_ps2_dbg.mode_recover_count == c1 + 1, "自动重发配置序列把它拉回红灯模式");
+        CHECK(s_packets >= 4, "确实发出了配置包（enter/type/set_mode/exit）");
+
+        (void)PS2_ReadData(&d);
+        CHECK(g_ps2_dbg.mode_recover_count == c1 + 1, "限速：同一时刻不会每次读取都重发");
+
+        s_tick += PS2_RECONFIG_INTERVAL_MS + 10u;
+        (void)PS2_ReadData(&d);
+        CHECK(g_ps2_dbg.mode_recover_count == c1 + 2, "超过间隔后再次重发");
+
+        /* 模拟模式下不应触发 */
+        pad_id = 0x73;
+        c1 = g_ps2_dbg.mode_recover_count;
+        s_tick += PS2_RECONFIG_INTERVAL_MS + 10u;
+        (void)PS2_ReadData(&d);
+        CHECK(g_ps2_dbg.mode_recover_count == c1, "模拟模式正常时不重发配置");
+    }
 
     printf("\n结果: %d 通过, %d 失败\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
