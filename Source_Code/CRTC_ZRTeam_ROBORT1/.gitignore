@@ -30,3 +30,6 @@ Desktop.ini
 # ===== ä¸Šä¼ åˆ° GitHub ç”¨çš„ä¸´æ—¶æ–‡ä»¶ï¼ˆtools/upload_to_github.ps1ï¼‰=====
 _gh_upload/
 _gh_src.tar
+
+# ===== ÊÖ¶¯ ARM ¹¹½¨Ğ£ÑéÓÃµÄÁÙÊ±Ä¿Â¼ =====
+_armbuild/
