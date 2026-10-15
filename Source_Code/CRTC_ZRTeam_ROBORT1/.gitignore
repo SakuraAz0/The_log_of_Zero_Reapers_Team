@@ -26,3 +26,7 @@ Release/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# ===== 上传到 GitHub 用的临时文件（tools/upload_to_github.ps1）=====
+_gh_upload/
+_gh_src.tar
