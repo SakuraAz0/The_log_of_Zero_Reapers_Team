@@ -81,7 +81,7 @@ static void gear_task(uint16_t buttons, uint32_t now)
 
 uint8_t Ctrl_Update(const PS2_Data_t *ps2, uint8_t enabled, Ctrl_Output_t *out)
 {
-    int16_t ly, lx, ry;
+    int16_t ly, lx, ry, rx;
     int16_t lo, hi;
 
     if (out == NULL) return 0;
@@ -116,6 +116,7 @@ uint8_t Ctrl_Update(const PS2_Data_t *ps2, uint8_t enabled, Ctrl_Output_t *out)
     ly = (int16_t)(shape(axis_up_pos(ps2->left_y))    * CTRL_LY_SIGN);
     lx = (int16_t)(shape(axis_right_pos(ps2->left_x)) * CTRL_LX_SIGN);
     ry = (int16_t)(shape(axis_up_pos(ps2->right_y))   * CTRL_RY_SIGN);
+    rx = (int16_t)(shape(axis_right_pos(ps2->right_x))* CTRL_RX_SIGN);
 
     /* 左摇杆 Y：前后。推杆幅度在当前档位区间 [lo, hi] 内线性映射 */
     if (ly != 0)
@@ -125,17 +126,23 @@ uint8_t Ctrl_Update(const PS2_Data_t *ps2, uint8_t enabled, Ctrl_Output_t *out)
         out->vx = (ly < 0) ? (int16_t)(-spd) : spd;
     }
 
-    /* 左摇杆 X：绕（对侧）后轮水平旋转
+    /* 左摇杆 X：原地自转（绕底盘中心，纯旋转，同样受档位上限约束） */
+    if (lx != 0)
+    {
+        out->vw += (int16_t)((int32_t)lx * hi / CTRL_SCALE);
+    }
+
+    /* 右摇杆 X：绕（对侧）后轮水平旋转
      * 推导：绕点 p 转时车体中心速度 v = ω × (C - P)；本模块的麦轮公式
      *       LF=vx+vy+vw, RF=vx-vy-vw, LR=vx-vy+vw, RR=vx+vy-vw
      *       对应标准式需做 vy=-vy_std、vw=-ω_std，于是：
      *         vx = ω·p_y/arm, vy = ω·p_x/arm, vw = -ω,  arm = 半轴距+半轮距
      *       选 p = (-半轴距, ±半轮距)（后轴），推左取对侧(右)、推右取对侧(左)。
      *       此时被绕的那个轮子的指令恰好为 0（见主机端测试）。 */
-    if (lx != 0)
+    if (rx != 0)
     {
-        int16_t dir  = (lx > 0) ? +1 : -1;                     /* +1 = 推右 */
-        int16_t mag  = iabs16(lx);
+        int16_t dir  = (rx > 0) ? +1 : -1;                     /* +1 = 推右 */
+        int16_t mag  = iabs16(rx);
         int16_t side = (int16_t)(-dir * CTRL_HALF_WID_MM);     /* 同侧后轮 */
         int32_t omega;
         const int32_t arm = (int32_t)CTRL_HALF_LEN_MM + CTRL_HALF_WID_MM;

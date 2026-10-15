@@ -475,10 +475,10 @@ int main(void)
         CHECK(cmd.gear == 2 && cmd.vx == CTRL_GEAR2_HI, "快速档满杆 -> 1000");
         p.left_y = 0x80;
 
-        /* --- 左摇杆 X：绕"对侧"后轮（推左 -> 绕右后轮；推右 -> 绕左后轮） --- */
+        /* --- 左摇杆 X：原地自转（纯旋转，绕底盘中心） --- */
         Ctrl_Init();
         s_tick += CTRL_GEAR_LOCKOUT_MS;
-        /* 用中速档（hi=700）测几何 */
+        /* 用中速档（hi=700）测 */
         p.buttons = (uint16_t)(~PS2_BTN_TRIANGLE); (void)Ctrl_Update(&p, 1, &cmd);
         CHECK(cmd.gear == 1, "几何测试用中速档");
         s_tick += CTRL_GEAR_LOCKOUT_MS;
@@ -486,29 +486,40 @@ int main(void)
 
         p.left_x = 0x00;                                   /* 推左 */
         (void)Ctrl_Update(&p, 1, &cmd);
-        CHECK(cmd.vw != 0 && cmd.vy != 0 && cmd.vx != 0, "推左 -> 产生 vx/vy/vw 组合（不是纯自转）");
+        CHECK(cmd.vx == 0 && cmd.vy == 0 && cmd.vw != 0, "左摇杆推左 -> 纯原地自转（vx=vy=0）");
+        CHECK(cmd.vw == -cmd.limit, "自转幅度受档位上限约束（中速档 = -700）");
+        p.left_x = 0xFF;                                   /* 推右 */
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.vw == cmd.limit, "左摇杆推右 -> 反向自转");
+        p.left_x = 0x80;
+
+        /* --- 右摇杆 X：绕"对侧"后轮（推左 -> 绕右后轮；推右 -> 绕左后轮） --- */
+        p.right_x = 0x00;                                  /* 推左 */
+        (void)Ctrl_Update(&p, 1, &cmd);
+        CHECK(cmd.vx != 0 && cmd.vy != 0 && cmd.vw != 0,
+              "右摇杆推左 -> 产生 vx/vy/vw 组合（绕转，不是纯自转）");
 #if CTRL_PIVOT_OPPOSITE_SIDE
         CHECK(wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 3) >= -2 &&
               wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 3) <= 2,
-              "推左 -> 右后轮指令为 0（绕右后轮，对侧）");
+              "右摇杆推左 -> 右后轮指令为 0（绕右后轮，对侧）");
 #else
         CHECK(wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 1) >= -2 &&
               wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 1) <= 2,
-              "推左 -> 左后轮指令为 0（绕左后轮，同侧）");
+              "右摇杆推左 -> 左后轮指令为 0（绕左后轮，同侧）");
 #endif
 
-        p.left_x = 0xFF;                                   /* 推右 */
+        p.right_x = 0xFF;                                  /* 推右 */
         (void)Ctrl_Update(&p, 1, &cmd);
 #if CTRL_PIVOT_OPPOSITE_SIDE
         CHECK(wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 1) >= -2 &&
               wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 1) <= 2,
-              "推右 -> 左后轮指令为 0（绕左后轮，对侧）");
+              "右摇杆推右 -> 左后轮指令为 0（绕左后轮，对侧）");
 #else
         CHECK(wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 3) >= -2 &&
               wheel_cmd(cmd.vx, cmd.vy, cmd.vw, 3) <= 2,
-              "推右 -> 右后轮指令为 0（绕右后轮，同侧）");
+              "右摇杆推右 -> 右后轮指令为 0（绕右后轮，同侧）");
 #endif
-        p.left_x = 0x80;
+        p.right_x = 0x80;
 
         /* --- 右摇杆 Y：两侧差速（左快右慢 / 右快左慢），受档位限幅 --- */
         p.left_y = 0x00;                                   /* 前进满杆 */
@@ -533,7 +544,7 @@ int main(void)
         /* --- 档位限幅：所有输出都不超过当前档位上限 --- */
         Ctrl_Init();
         s_tick += CTRL_GEAR_LOCKOUT_MS;
-        p.left_y = 0x00; p.left_x = 0x00; p.right_y = 0x00;   /* 前进+绕转 同时满杆 */
+        p.left_y = 0x00; p.left_x = 0x00; p.right_y = 0x00; p.right_x = 0x00;   /* 多轴同时满杆 */
         (void)Ctrl_Update(&p, 1, &cmd);
         Motor_StopAll();
         Mecanum_MoveLimit(cmd.vx, cmd.vy, cmd.vw, cmd.limit);
