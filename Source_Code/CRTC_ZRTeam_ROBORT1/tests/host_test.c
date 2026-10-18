@@ -673,21 +673,22 @@ int main(void)
               "关节舵机行程 >= 2000us（足够转到 180°）");
         CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_OPEN_US,
               "机械爪上电停在完全张开（= SERVO2_MAX_US）");
-        CHECK(SERVO_GRIP_SHIFT_US == -166,
-              "机械爪行程整体下移 15°（-166us，一个舵盘齿约 14.4°）");
-        CHECK(SERVO2_MIN_US == 334 && SERVO2_MAX_US == 1334,
-              "平移后：全闭 334us ~ 全开 1334us");
+        CHECK(SERVO_GRIP_ANGLE_SHIFT_DEG10 == -125,
+              "机械爪行程整体下移 12.5°（-125 个 0.1°，实测最佳值）");
+        CHECK(SERVO_GRIP_SHIFT_US == -138, "12.5° 对应 -138us");
+        CHECK(SERVO2_MIN_US == 362 && SERVO2_MAX_US == 1362,
+              "平移后：全闭 362us ~ 全开 1362us");
 
         /* 角度接口：机械爪 0=全闭、90=全开（角度是"机构角度"，已含零点偏移） */
         Servo_SetAngle(SERVO_CH_GRIPPER, 0);
-        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MIN_US, "爪 0° -> 334us（完全闭合）");
+        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MIN_US, "爪 0° -> 362us（完全闭合）");
         Servo_SetAngle(SERVO_CH_GRIPPER, 90);
-        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MAX_US, "爪 90° -> 1334us（完全张开）");
+        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MAX_US, "爪 90° -> 1362us（完全张开）");
         Servo_SetAngle(SERVO_CH_GRIPPER, 45);
-        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == 834, "爪 45° -> 834us（半开）");
+        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == 862, "爪 45° -> 862us（半开）");
         Servo_SetAngle(SERVO_CH_GRIPPER, 200);
         CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MAX_US, "角度超范围 -> 限幅到 90°");
-        CHECK(SERVO_GRIP_CLOSE_US == 667, "一键式合上端点 = 667us（机构 30°）");
+        CHECK(SERVO_GRIP_CLOSE_US == 695, "一键式合上端点 = 695us（机构 30°）");
         Servo_SetAngle(SERVO_CH_JOINT1, 180);
         CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == 2500, "关节 180° -> 2500us");
         Servo_SetAngle(SERVO_CH_JOINT1, 90);
