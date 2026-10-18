@@ -47,17 +47,40 @@
 #define SERVO3_MAX_DEG    180
 
 // ===== 上电默认位置（微秒）=====
-// 关节舵机上电转到 0°（= MIN 端）；机械爪上电停在 1000us（45° 半开，避开两端死点）
+// 关节舵机上电转到 0°（= MIN 端）；机械爪上电停在**完全张开**（90°，一键式模式的初始位置）
 #define SERVO0_POWERON_US SERVO0_MIN_US
 #define SERVO1_POWERON_US SERVO1_MIN_US
-#define SERVO2_POWERON_US 1000
 #define SERVO3_POWERON_US SERVO3_MIN_US
 
 #define SERVO_SLEW_US_PER_TICK 15       // 每 10ms 最多变化 15us（2000us 全行程约 1.3s）
 
-// 机械爪语义
-#define SERVO_GRIP_OPEN_US    SERVO2_MAX_US
-#define SERVO_GRIP_CLOSE_US   SERVO2_MIN_US
+// ===== 机械爪（MG90S，0°=完全闭合 / 90°=完全张开）=====
+#define SERVO_GRIP_OPEN_DEG        90                                  // 完全张开
+#define SERVO_GRIP_ONESHOT_DEG     60                                  // 一键式行程 60°
+#define SERVO_GRIP_CLOSE_DEG       (SERVO_GRIP_OPEN_DEG - SERVO_GRIP_ONESHOT_DEG)   // = 30°
+
+// 一键张合的两个端点（脉宽）
+#define SERVO_GRIP_OPEN_US         SERVO2_MAX_US                        // 90° -> 1500us
+#define SERVO_GRIP_CLOSE_US        ((uint16_t)(SERVO2_MIN_US + \
+                                     (uint32_t)(SERVO2_MAX_US - SERVO2_MIN_US) * SERVO_GRIP_CLOSE_DEG / SERVO2_MAX_DEG))  // 30° -> 833us
+
+#define SERVO2_POWERON_US          SERVO_GRIP_OPEN_US                   // 上电：完全张开
+
+// ===== 机械爪控制模式（SELECT 键切换 =====
+// JOG     (0)：移植关节舵机（MG995）策略——按住 □ 向张开方向走、按住 ○ 向闭合方向走，
+//             松开就停在当前位置；可在 0~90° 全程内点动（行程 90°）
+// ONESHOT (1)：一键张合——按一次自动走到位：完全张开 90° <-> 合上 30°（行程 60°，上电默认此模式，
+//             且初始停在"完全张开"）
+#define SERVO_GRIP_MODE_JOG        0
+#define SERVO_GRIP_MODE_ONESHOT    1
+#ifndef SERVO_GRIP_MODE_DEFAULT
+#define SERVO_GRIP_MODE_DEFAULT    SERVO_GRIP_MODE_ONESHOT
+#endif
+// 切换模式的按键去抖（两次切换最小间隔）
+#define SERVO_MODE_TOGGLE_MS       250U
+
+// 当前机械爪控制模式（SELECT 切换；调试器里可直接 Watch 这个变量）
+extern volatile uint8_t g_servo_grip_mode;
 
 // ===== 机械爪堵转保护 =====
 // 机械爪到位后若还一直按住按键，超过这个时间就断开该通道 PWM（舵机失力、不再发热）。
@@ -78,7 +101,7 @@
 #define SERVO_CALIBRATE_STEP_MS 2000    // 每步保持 2 秒，方便观察
 
 void     Servo_Init(void);
-// 每 10ms 调用一次：按住 L1/L2、R1/R2、□/○ 时按 slew 速率移动对应舵机
+// 每 10ms 调用一次：关节舵机 L1/L2、R1/R2；机械爪 □/○；SELECT 切换机械爪模式
 void     Servo_Task(uint16_t ps2_buttons);
 // 直接指定脉宽（会按该通道 min/max 限幅，并立即生效，不做插值）
 void     Servo_SetPulse(uint8_t ch, uint16_t pulse_us);
@@ -87,5 +110,9 @@ void     Servo_SetPulse(uint8_t ch, uint16_t pulse_us);
 void     Servo_SetAngle(uint8_t ch, uint16_t deg);
 uint16_t Servo_GetPulse(uint8_t ch);    // 当前实际脉宽
 uint16_t Servo_GetTarget(uint8_t ch);   // 目标脉宽
+
+// 机械爪控制模式
+uint8_t  Servo_GetGripMode(void);       // 0=点动保持，1=一键张合
+void     Servo_SetGripMode(uint8_t mode);   // 切到 ONESHOT 时会把目标设为"完全张开"
 
 #endif

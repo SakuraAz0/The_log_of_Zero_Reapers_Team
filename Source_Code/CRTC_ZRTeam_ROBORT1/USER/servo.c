@@ -148,6 +148,32 @@ static void set_abs_target(uint8_t ch, uint16_t us)
     s_target_us[ch] = clamp_us(ch, (int32_t)us);
 }
 
+// 角度 -> 脉宽（供内部设置目标用）
+static uint16_t deg_to_us(uint8_t ch, uint16_t deg)
+{
+    uint32_t span;
+
+    if (ch >= SERVO_CH_NUM) return 0u;
+    if (deg > s_max_deg[ch]) deg = s_max_deg[ch];
+
+    span = (uint32_t)(s_max_us[ch] - s_min_us[ch]);
+    return (uint16_t)(s_min_us[ch] + span * deg / s_max_deg[ch]);
+}
+
+/* ===== 机械爪控制模式 ===== */
+volatile uint8_t g_servo_grip_mode = SERVO_GRIP_MODE_DEFAULT;
+
+uint8_t Servo_GetGripMode(void) { return g_servo_grip_mode; }
+
+void Servo_SetGripMode(uint8_t mode)
+{
+    g_servo_grip_mode = (mode == SERVO_GRIP_MODE_JOG) ? SERVO_GRIP_MODE_JOG : SERVO_GRIP_MODE_ONESHOT;
+
+    /* 切到"一键张合"模式时，按该模式的定义把目标设为"完全张开"（初始位置） */
+    if (g_servo_grip_mode == SERVO_GRIP_MODE_ONESHOT)
+        set_abs_target(SERVO_CH_GRIPPER, deg_to_us(SERVO_CH_GRIPPER, SERVO_GRIP_OPEN_DEG));
+}
+
 // 向目标插值（每 tick 最多 SERVO_SLEW_US_PER_TICK）
 static void slew_toward_target(uint8_t ch)
 {
@@ -211,12 +237,52 @@ void Servo_Task(uint16_t ps2_buttons)
     if (PS2_BtnDown(ps2_buttons, PS2_BTN_R1)) set_rel_target(SERVO_CH_JOINT2, +SERVO_SLEW_US_PER_TICK);
     if (PS2_BtnDown(ps2_buttons, PS2_BTN_R2)) set_rel_target(SERVO_CH_JOINT2, -SERVO_SLEW_US_PER_TICK);
 
-    /* □ 张开 / ○ 合拢 -> 机械爪（MG90S） */
+    /* ===== 机械爪（MG90S）：SELECT 切换控制模式 ===== */
     {
-        uint8_t pressed = 0;
+        static uint8_t  s_prev_select = 0;
+        static uint32_t s_sel_lock_ms = 0;
+        uint32_t now = HAL_GetTick();
+        uint8_t  sel = PS2_BtnDown(ps2_buttons, PS2_BTN_SELECT);
+        uint8_t  pressed = 0;
 
-        if (PS2_BtnDown(ps2_buttons, PS2_BTN_SQUARE)) { set_abs_target(SERVO_CH_GRIPPER, SERVO_GRIP_OPEN_US);  pressed = 1; }
-        if (PS2_BtnDown(ps2_buttons, PS2_BTN_CIRCLE)) { set_abs_target(SERVO_CH_GRIPPER, SERVO_GRIP_CLOSE_US); pressed = 1; }
+        /* SELECT：边沿触发 + 250ms 去抖，在两种控制模式间切换 */
+        if (sel && !s_prev_select && (uint32_t)(now - s_sel_lock_ms) >= SERVO_MODE_TOGGLE_MS)
+        {
+            s_sel_lock_ms = now;
+            Servo_SetGripMode(g_servo_grip_mode == SERVO_GRIP_MODE_ONESHOT
+                                  ? SERVO_GRIP_MODE_JOG
+                                  : SERVO_GRIP_MODE_ONESHOT);
+        }
+        s_prev_select = sel;
+
+        if (g_servo_grip_mode == SERVO_GRIP_MODE_ONESHOT)
+        {
+            /* 模式 1：一键张合（行程 60°：完全张开 90° <-> 合上 30°），按一次自动走到位 */
+            if (PS2_BtnDown(ps2_buttons, PS2_BTN_SQUARE))
+            {
+                set_abs_target(SERVO_CH_GRIPPER, deg_to_us(SERVO_CH_GRIPPER, SERVO_GRIP_OPEN_DEG));
+                pressed = 1;
+            }
+            if (PS2_BtnDown(ps2_buttons, PS2_BTN_CIRCLE))
+            {
+                set_abs_target(SERVO_CH_GRIPPER, deg_to_us(SERVO_CH_GRIPPER, SERVO_GRIP_CLOSE_DEG));
+                pressed = 1;
+            }
+        }
+        else
+        {
+            /* 模式 0：点动保持（移植关节舵机策略）——按住才动，松开停在当前位置，0~90° 全程 */
+            if (PS2_BtnDown(ps2_buttons, PS2_BTN_SQUARE))
+            {
+                set_rel_target(SERVO_CH_GRIPPER, +SERVO_SLEW_US_PER_TICK);   /* 向张开方向 */
+                pressed = 1;
+            }
+            if (PS2_BtnDown(ps2_buttons, PS2_BTN_CIRCLE))
+            {
+                set_rel_target(SERVO_CH_GRIPPER, -SERVO_SLEW_US_PER_TICK);   /* 向闭合方向 */
+                pressed = 1;
+            }
+        }
 
 #if SERVO_GRIP_RELEASE_MS > 0
         /* 到位后仍一直按住 -> 断开该通道 PWM（舵机失力），避免顶着机械限位持续堵转发烫 */
