@@ -49,7 +49,11 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+/* 上次复位原因（RCC->CSR 的复位标志位），调试器里 Watch 这个变量即可。
+ * 0x08000000=PORRSTF 上电/欠压类  0x04000000=PINRSTF 复位脚(NRST)被拉低(干扰)
+ * 0x10000000=SFTRSTF 软件复位    0x20000000=IWDGRSTF 独立看门狗
+ * 上电首次通常为 0x0C000000（POR + PIN 同时置位） */
+volatile uint32_t g_reset_cause;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -71,7 +75,11 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  /* 锁存"上次复位原因"再清除标志：RCC->CSR 的复位标志只能软件清，
+   * 本工程其它地方都不清，所以必须在这里"先读后清"，否则上电那次 POR 标志会一直留着、
+   * 后面任何复位都读不出真实原因。清完后，下一次复位的标志就会被下次启动准确捕获。 */
+  g_reset_cause = (uint32_t)(RCC->CSR & 0xFE000000u);
+  __HAL_RCC_CLEAR_RESET_FLAGS();
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
