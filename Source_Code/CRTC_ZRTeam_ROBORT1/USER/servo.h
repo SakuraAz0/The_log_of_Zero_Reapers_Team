@@ -27,20 +27,28 @@
 // 线性关系 pulse = 500 + 角度 × 11.11。
 // - 两个关节舵机（MG995/SG90）：给全行程 500~2500（0~180°）
 // - 机械爪（MG90S）：**机构限制只能转 90°**，0°=完全闭合、90°=完全张开
-//   -> 对应 500us(全闭) ~ 1500us(全开)。
-//   注意：两端都是机械死点，**不要长时间停在这两个端点上**（会顶住堵转发烫），
-//   所以上电默认停在中位 1000us(45°，半开)。
-//   若实测两端有嗡嗡声，把两端各向内收 20~50us（如 520/1480）。
 #define SERVO0_MIN_US     500
 #define SERVO0_MAX_US     2500
 #define SERVO1_MIN_US     500
 #define SERVO1_MAX_US     2500
-#define SERVO2_MIN_US     500
-#define SERVO2_MAX_US     1500
 #define SERVO3_MIN_US     500
 #define SERVO3_MAX_US     2500
 
+// ===== 机械爪角度零点偏移（重要校准项）=====
+// 舵盘装在舵机花键上，一个齿 = 360/25 = **14.4°**，很容易装偏一个齿，导致整段行程整体偏移。
+// 实测现象：张开端顶到/超过机械限位，同时闭合端合不到位
+//   -> 说明机构可用窗口整体比"0~90°"偏移了约 -15°，需要**整体向下平移**。
+// 正值 = 行程整体向"角度更大"方向平移（脉宽变大）；负值 = 向"角度更小"方向平移（脉宽变小）。
+// 15° ≈ 167us。当前取 -15，得到：全闭 334us、全开 1334us。
+// 现场微调：张开端还顶死就再减（-18/-20）；闭合端顶死发烫就加回来（-10/-5，甚至 0）。
+#define SERVO_GRIP_ANGLE_SHIFT_DEG   (-15)
+#define SERVO_GRIP_SHIFT_US          ((int32_t)SERVO_GRIP_ANGLE_SHIFT_DEG * 1000 / 90)   // 15° -> 167us
+#define SERVO2_MIN_US                ((uint16_t)(500  + SERVO_GRIP_SHIFT_US))   // 现在 334us（全闭）
+#define SERVO2_MAX_US                ((uint16_t)(1500 + SERVO_GRIP_SHIFT_US))   // 现在 1334us（全开）
+
 // ===== 每路舵机的机械角度范围（用于 Servo_SetAngle）=====
+// 注意：机械爪的 0°/90° 指的是**机构**的全闭/全开（已含上面的零点偏移），
+//      不是舵机自身的电气 0°/90°。
 #define SERVO0_MAX_DEG    180
 #define SERVO1_MAX_DEG    180
 #define SERVO2_MAX_DEG    90       // 机械爪：0°=全闭、90°=全开
