@@ -60,14 +60,23 @@
 #define SERVO1_POWERON_US SERVO1_MIN_US
 #define SERVO3_POWERON_US SERVO3_MIN_US
 
-#define SERVO_SLEW_US_PER_TICK 15       // 每 10ms 最多变化 15us（2000us 全行程约 1.3s）
+// ===== 舵机移动速度 =====
+// Servo_Task 每 10ms 调用一次；三个舵机都是 11.11us/°（2000us=180°、机械爪 1000us=90°）。
+// 本宏 = 每 tick 的最大插值步长，也直接决定**机械爪**的移动速度：15us/tick = **135°/s**（保持不变）。
+#define SERVO_SLEW_US_PER_TICK 15
+
+// **关节舵机**（MG995/SG90）移动速度单独设定为 **120°/s**：
+//   1 tick(10ms) 应走 1.2° = 13.33us。用 0.1us 定点累加（133 = 13.3us/tick），
+//   避免整数截断成 13us 导致速度变成 117°/s。
+#define SERVO_JOINT_DEG_PER_SEC   120
+#define SERVO_JOINT_STEP_US10     133
 
 // ===== 机械爪（MG90S，0°=完全闭合 / 90°=完全张开）=====
 #define SERVO_GRIP_OPEN_DEG        90                                  // 完全张开
 // 一键式行程（合上角 = 90° - 本值）。想让爪子合得更紧就调大（如 75 -> 合到 15°）；
 // 别给 90（会合到完全闭合死点，夹空物时一直顶死堵转发烫）。
 #ifndef SERVO_GRIP_ONESHOT_DEG
-#define SERVO_GRIP_ONESHOT_DEG     60                                  // 一键式行程 60°
+#define SERVO_GRIP_ONESHOT_DEG     54                                  // 一键式行程 60°
 #endif
 #define SERVO_GRIP_CLOSE_DEG       (SERVO_GRIP_OPEN_DEG - SERVO_GRIP_ONESHOT_DEG)   // 当前 = 30°
 

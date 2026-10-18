@@ -22,6 +22,8 @@ static const uint16_t s_max_deg[SERVO_CH_NUM] = { SERVO0_MAX_DEG, SERVO1_MAX_DEG
 
 static uint16_t s_pulse_us[SERVO_CH_NUM];    /* 当前实际脉宽 */
 static uint16_t s_target_us[SERVO_CH_NUM];   /* 目标脉宽 */
+/* 关节舵机速度累加器（0.1us 定点），用于把 13.33us/tick 精确实现成 120°/s */
+static uint16_t s_joint_acc_x10 = 0;
 
 static uint16_t clamp_us(uint8_t ch, int32_t us)
 {
@@ -97,6 +99,8 @@ void Servo_Init(void)
     SERVO_TIM->SR  = (uint16_t)~TIM_SR_UIF;         /* 清更新标志 */
     SERVO_TIM->CR1 = TIM_CR1_ARPE | TIM_CR1_CEN;    /* 自动重装载 + 启动 */
 
+    s_joint_acc_x10 = 0;                            /* 关节舵机速度累加器清零 */
+
 #if SERVO_GRIP_RELEASE_MS > 0
     s_grip_attached = 1;
     s_grip_hold_ms  = 0;
@@ -149,8 +153,7 @@ static void set_abs_target(uint8_t ch, uint16_t us)
 }
 
 // 角度 -> 脉宽（供内部设置目标用）
-static uint16_t deg_to_us(uint8_t ch, uint16_t deg)
-{
+static uint16_t deg_to_us(uint8_t ch, uint16_t deg){
     uint32_t span;
 
     if (ch >= SERVO_CH_NUM) return 0u;
@@ -197,6 +200,22 @@ static void slew_toward_target(uint8_t ch)
     write_ccr(ch, s_pulse_us[ch]);
 }
 
+/* 关节舵机每 tick 的步长（us）：
+ * 目标速度 120°/s；11.11us/° -> 每 10ms 应走 13.33us。
+ * 用 0.1us 定点累加（每次加 133），避免直接取 13us 导致实际只有 117°/s。 */
+static uint16_t joint_step_us(void)
+{
+    uint16_t step = 0;
+
+    s_joint_acc_x10 += (uint16_t)SERVO_JOINT_STEP_US10;
+    while (s_joint_acc_x10 >= 10u)
+    {
+        s_joint_acc_x10 -= 10u;
+        step++;
+    }
+    return step;
+}
+
 void Servo_Task(uint16_t ps2_buttons)
 {
 #if SERVO_CALIBRATE_CH > 0
@@ -229,13 +248,18 @@ void Servo_Task(uint16_t ps2_buttons)
         return;
     }
 #else
-    /* L1 增 / L2 减 -> 关节舵机1（MG995） */
-    if (PS2_BtnDown(ps2_buttons, PS2_BTN_L1)) set_rel_target(SERVO_CH_JOINT1, +SERVO_SLEW_US_PER_TICK);
-    if (PS2_BtnDown(ps2_buttons, PS2_BTN_L2)) set_rel_target(SERVO_CH_JOINT1, -SERVO_SLEW_US_PER_TICK);
+    /* 关节舵机（MG995/SG90）：**120°/s**（每 tick 13.3us，0.1us 定点累加），按住才走、松开停 */
+    {
+        uint16_t step = joint_step_us();
 
-    /* R1 增 / R2 减 -> 关节舵机2（SG90） */
-    if (PS2_BtnDown(ps2_buttons, PS2_BTN_R1)) set_rel_target(SERVO_CH_JOINT2, +SERVO_SLEW_US_PER_TICK);
-    if (PS2_BtnDown(ps2_buttons, PS2_BTN_R2)) set_rel_target(SERVO_CH_JOINT2, -SERVO_SLEW_US_PER_TICK);
+        if (step > 0u)
+        {
+            if (PS2_BtnDown(ps2_buttons, PS2_BTN_L1)) set_rel_target(SERVO_CH_JOINT1, +(int16_t)step);
+            if (PS2_BtnDown(ps2_buttons, PS2_BTN_L2)) set_rel_target(SERVO_CH_JOINT1, -(int16_t)step);
+            if (PS2_BtnDown(ps2_buttons, PS2_BTN_R1)) set_rel_target(SERVO_CH_JOINT2, +(int16_t)step);
+            if (PS2_BtnDown(ps2_buttons, PS2_BTN_R2)) set_rel_target(SERVO_CH_JOINT2, -(int16_t)step);
+        }
+    }
 
     /* ===== 机械爪（MG90S）：SELECT 切换控制模式 ===== */
     {

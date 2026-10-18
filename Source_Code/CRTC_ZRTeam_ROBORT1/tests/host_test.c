@@ -719,29 +719,46 @@ int main(void)
         Servo_SetPulse(SERVO_CH_JOINT1, 3000);
         CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == SERVO0_MAX_US, "高于上限 -> 限幅到 MAX");
 
-        /* 关节舵机：L1 增 / L2 减，按 slew 逐步移动 */
+        /* 关节舵机：L1 增 / L2 减；速度 120°/s（100 tick = 1 秒 -> 约 1330us） */
         Servo_Init();
         {
-            uint16_t p0 = Servo_GetPulse(SERVO_CH_JOINT1);
-            for (int i = 0; i < 5; i++) Servo_Task((uint16_t)(~PS2_BTN_L1));
-            CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == (uint16_t)(p0 + 5 * SERVO_SLEW_US_PER_TICK),
-                  "按住 L1 -> 关节舵机1 逐帧增加（slew 限速）");
-            for (int i = 0; i < 5; i++) Servo_Task((uint16_t)(~PS2_BTN_L2));
-            CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == p0, "按住 L2 -> 回到原位");
+            const uint16_t p0  = Servo_GetPulse(SERVO_CH_JOINT1);
+            const uint16_t exp = (uint16_t)(SERVO_JOINT_STEP_US10 * 100u / 10u);   /* 133*100/10 = 1330us */
+
+            for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_L1));
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == (uint16_t)(p0 + exp),
+                  "按住 L1 一秒 -> 关节舵机1 走 1330us（= 120°/s）");
+            for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_L2));
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == p0, "按住 L2 一秒 -> 回到原位");
             CHECK(g_fake_tim3.CCR1 == Servo_GetPulse(SERVO_CH_JOINT1),
                   "TIM3->CCR1 与实际脉宽一致");
         }
 
-        /* 关节舵机2：R1 / R2 */
+        /* 关节舵机2：R1 / R2，同样 120°/s */
         Servo_Init();
         {
-            uint16_t p0 = Servo_GetPulse(SERVO_CH_JOINT2);
-            for (int i = 0; i < 5; i++) Servo_Task((uint16_t)(~PS2_BTN_R1));
-            CHECK(Servo_GetPulse(SERVO_CH_JOINT2) == (uint16_t)(p0 + 5 * SERVO_SLEW_US_PER_TICK),
-                  "按住 R1 -> 关节舵机2 增加");
-            for (int i = 0; i < 5; i++) Servo_Task((uint16_t)(~PS2_BTN_R2));
-            CHECK(Servo_GetPulse(SERVO_CH_JOINT2) == p0, "按住 R2 -> 回到原位");
+            const uint16_t p0  = Servo_GetPulse(SERVO_CH_JOINT2);
+            const uint16_t exp = (uint16_t)(SERVO_JOINT_STEP_US10 * 100u / 10u);
+
+            for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_R1));
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT2) == (uint16_t)(p0 + exp),
+                  "按住 R1 一秒 -> 关节舵机2 走 1330us（= 120°/s）");
+            for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_R2));
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT2) == p0, "按住 R2 一秒 -> 回到原位");
         }
+
+        /* 机械爪速度不变：仍是 SERVO_SLEW_US_PER_TICK（15us/tick = 135°/s） */
+        Servo_Init();
+        {
+            const uint16_t p0 = Servo_GetPulse(SERVO_CH_GRIPPER);
+
+            for (int i = 0; i < 10; i++) Servo_Task((uint16_t)(~PS2_BTN_CIRCLE));
+            CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) ==
+                      (uint16_t)(p0 - 10 * SERVO_SLEW_US_PER_TICK),
+                  "机械爪点动速度仍为 15us/tick（135°/s，未改变）");
+        }
+        CHECK(SERVO_JOINT_DEG_PER_SEC == 120, "关节舵机目标速度 = 120°/s");
+        CHECK(SERVO_JOINT_STEP_US10 == 133, "每 tick 13.3us（133 个 0.1us）");
 
         /* 机械爪：□ 张开 / ○ 合拢（一键式） */
         Servo_Init();
