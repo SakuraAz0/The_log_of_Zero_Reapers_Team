@@ -41,7 +41,7 @@
 // 单位是 **0.1°**：-135 = -13.5°。负值 = 向"角度更小"方向平移（脉宽变小）。
 // 13.5° = 150us。当前取 -135，得到：全闭 350us、全开 1350us。
 // 现场微调：张开端还顶死就减（-140 / -145）；闭合端顶死发烫就加回来（-130 / -120）。
-#define SERVO_GRIP_ANGLE_SHIFT_DEG10   (-135)
+#define SERVO_GRIP_ANGLE_SHIFT_DEG10   (-130)
 #define SERVO_GRIP_SHIFT_US            ((int32_t)SERVO_GRIP_ANGLE_SHIFT_DEG10 * 1000 / (90 * 10))  // -135 -> -150us
 #define SERVO2_MIN_US                  ((uint16_t)(500  + SERVO_GRIP_SHIFT_US))   // 现在 350us（全闭）
 #define SERVO2_MAX_US                  ((uint16_t)(1500 + SERVO_GRIP_SHIFT_US))   // 现在 1350us（全开）
@@ -64,8 +64,12 @@
 
 // ===== 机械爪（MG90S，0°=完全闭合 / 90°=完全张开）=====
 #define SERVO_GRIP_OPEN_DEG        90                                  // 完全张开
+// 一键式行程（合上角 = 90° - 本值）。想让爪子合得更紧就调大（如 75 -> 合到 15°）；
+// 别给 90（会合到完全闭合死点，夹空物时一直顶死堵转发烫）。
+#ifndef SERVO_GRIP_ONESHOT_DEG
 #define SERVO_GRIP_ONESHOT_DEG     60                                  // 一键式行程 60°
-#define SERVO_GRIP_CLOSE_DEG       (SERVO_GRIP_OPEN_DEG - SERVO_GRIP_ONESHOT_DEG)   // = 30°
+#endif
+#define SERVO_GRIP_CLOSE_DEG       (SERVO_GRIP_OPEN_DEG - SERVO_GRIP_ONESHOT_DEG)   // 当前 = 30°
 
 // 一键张合的两个端点（脉宽）
 #define SERVO_GRIP_OPEN_US         SERVO2_MAX_US                        // 90° -> 1500us

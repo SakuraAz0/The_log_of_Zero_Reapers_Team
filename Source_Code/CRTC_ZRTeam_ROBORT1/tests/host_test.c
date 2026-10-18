@@ -671,24 +671,42 @@ int main(void)
               "CCR1/CCR2 已写入上电默认脉宽");
         CHECK(SERVO0_MAX_US - SERVO0_MIN_US >= 2000,
               "关节舵机行程 >= 2000us（足够转到 180°）");
+        /* ===== 以下断言全部"按宏自洽计算"，现场改零点偏移/一键行程时不用动测试 ===== */
         CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_OPEN_US,
               "机械爪上电停在完全张开（= SERVO2_MAX_US）");
-        CHECK(SERVO_GRIP_ANGLE_SHIFT_DEG10 == -135,
-              "机械爪行程整体下移 13.5°（-135 个 0.1°，实测最佳值）");
-        CHECK(SERVO_GRIP_SHIFT_US == -150, "13.5° 对应 -150us");
-        CHECK(SERVO2_MIN_US == 350 && SERVO2_MAX_US == 1350,
-              "平移后：全闭 350us ~ 全开 1350us");
+
+        /* 零点偏移：标定值应落在合理区间；平移后行程跨度必须仍是 1000us（= 90°） */
+        CHECK(SERVO_GRIP_ANGLE_SHIFT_DEG10 <= -100 && SERVO_GRIP_ANGLE_SHIFT_DEG10 >= -200,
+              "机械爪零点偏移标定值在 -10° ~ -20° 范围内");
+        CHECK(SERVO_GRIP_SHIFT_US == (int32_t)SERVO_GRIP_ANGLE_SHIFT_DEG10 * 1000 / 900,
+              "偏移换算：0.1° -> us（1° = 1000/90 us）");
+        CHECK(SERVO2_MIN_US == (uint16_t)(500 + SERVO_GRIP_SHIFT_US) &&
+              SERVO2_MAX_US == (uint16_t)(1500 + SERVO_GRIP_SHIFT_US),
+              "平移就是：原 500/1500 整体加偏移");
+        CHECK(SERVO2_MAX_US - SERVO2_MIN_US == 1000,
+              "平移后行程跨度不变（1000us = 机构 90°）");
 
         /* 角度接口：机械爪 0=全闭、90=全开（角度是"机构角度"，已含零点偏移） */
-        Servo_SetAngle(SERVO_CH_GRIPPER, 0);
-        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MIN_US, "爪 0° -> 350us（完全闭合）");
-        Servo_SetAngle(SERVO_CH_GRIPPER, 90);
-        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MAX_US, "爪 90° -> 1350us（完全张开）");
-        Servo_SetAngle(SERVO_CH_GRIPPER, 45);
-        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == 850, "爪 45° -> 850us（半开）");
-        Servo_SetAngle(SERVO_CH_GRIPPER, 200);
-        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MAX_US, "角度超范围 -> 限幅到 90°");
-        CHECK(SERVO_GRIP_CLOSE_US == 683, "一键式合上端点 = 683us（机构 30°）");
+        {
+            const uint16_t span = (uint16_t)(SERVO2_MAX_US - SERVO2_MIN_US);
+
+            Servo_SetAngle(SERVO_CH_GRIPPER, 0);
+            CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MIN_US, "爪 0° -> MIN（完全闭合）");
+            Servo_SetAngle(SERVO_CH_GRIPPER, 90);
+            CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MAX_US, "爪 90° -> MAX（完全张开）");
+            Servo_SetAngle(SERVO_CH_GRIPPER, 45);
+            CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == (uint16_t)(SERVO2_MIN_US + span / 2),
+                  "爪 45° -> 行程中点");
+            Servo_SetAngle(SERVO_CH_GRIPPER, 200);
+            CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MAX_US, "角度超范围 -> 限幅到 90°");
+
+            /* 一键式合上端点：MIN + 跨度 × 合上角/90，与 SERVO_GRIP_ONESHOT_DEG 自洽 */
+            CHECK(SERVO_GRIP_CLOSE_DEG == SERVO_GRIP_OPEN_DEG - SERVO_GRIP_ONESHOT_DEG,
+                  "一键合上角 = 完全张开角 - 一键行程");
+            CHECK(SERVO_GRIP_CLOSE_US ==
+                      (uint16_t)(SERVO2_MIN_US + (uint32_t)span * SERVO_GRIP_CLOSE_DEG / SERVO2_MAX_DEG),
+                  "一键合上端点脉宽 = MIN + 跨度×合上角/90（改 SERVO_GRIP_ONESHOT_DEG 自动跟随）");
+        }
         Servo_SetAngle(SERVO_CH_JOINT1, 180);
         CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == 2500, "关节 180° -> 2500us");
         Servo_SetAngle(SERVO_CH_JOINT1, 90);
@@ -737,8 +755,10 @@ int main(void)
         Servo_Init();
         CHECK(Servo_GetGripMode() == SERVO_GRIP_MODE_ONESHOT, "上电默认 = 一键张合模式(1)");
         CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_OPEN_US, "上电停在完全张开 90°");
-        CHECK(SERVO_GRIP_OPEN_DEG == 90 && SERVO_GRIP_CLOSE_DEG == 30,
-              "一键张合行程 = 60°（90° -> 30°）");
+        CHECK(SERVO_GRIP_OPEN_DEG == 90 &&
+              SERVO_GRIP_CLOSE_DEG == SERVO_GRIP_OPEN_DEG - SERVO_GRIP_ONESHOT_DEG &&
+              SERVO_GRIP_ONESHOT_DEG > 0 && SERVO_GRIP_ONESHOT_DEG < SERVO_GRIP_OPEN_DEG,
+              "一键张合：合上角 = 全开角 - 一键行程（行程在 0~90° 之间）");
         CHECK(Servo_GetTarget(SERVO_CH_GRIPPER) == SERVO_GRIP_OPEN_US, "上电目标 = 完全张开");
 
         /* 一键式：按一次自动走到位，松开不影响 */
