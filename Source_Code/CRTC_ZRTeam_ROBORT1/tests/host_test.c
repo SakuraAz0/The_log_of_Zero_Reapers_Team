@@ -22,6 +22,7 @@
 #include "control.h"
 #include "led.h"
 #include "servo.h"
+#include "watchdog.h"
 
 /* ================= 伪造内核调试单元 ================= */
 static DWT_Type       g_fake_dwt;
@@ -39,6 +40,14 @@ static RCC_TypeDef g_fake_rcc;
 static TIM_TypeDef g_fake_tim3;
 #undef TIM3
 #define TIM3 (&g_fake_tim3)
+
+/* ================= 伪造 IWDG / DBGMCU（watchdog.c 直接写寄存器）================= */
+static IWDG_TypeDef   g_fake_iwdg;
+static DBGMCU_TypeDef g_fake_dbgmcu;
+#undef IWDG
+#define IWDG (&g_fake_iwdg)
+#undef DBGMCU
+#define DBGMCU (&g_fake_dbgmcu)
 
 uint32_t SystemCoreClock = 0U;   /* =0 使 delay_us() 的 ticks 为 0，立即返回 */
 
@@ -177,6 +186,7 @@ uint32_t HAL_GetTick(void) { return s_tick; }
 #include "../USER/control.c"
 #include "../USER/led.c"
 #include "../USER/servo.c"
+#include "../USER/watchdog.c"
 
 /* 麦轮逆解参考实现（仅供测试校验用） */
 static int16_t wheel_cmd(int16_t vx, int16_t vy, int16_t vw, int which)
@@ -751,6 +761,32 @@ int main(void)
         s_tick += PS2_RECONFIG_INTERVAL_MS + 10u;
         (void)PS2_ReadData(&d);
         CHECK(g_ps2_dbg.mode_recover_count == c1, "模拟模式正常时不重发配置");
+    }
+
+    /* ---------- 10. 独立看门狗（IWDG，1 秒超时） ---------- */
+    printf("[10] 独立看门狗\n");
+    {
+        memset(&g_fake_iwdg, 0, sizeof g_fake_iwdg);
+        memset(&g_fake_dbgmcu, 0, sizeof g_fake_dbgmcu);
+
+        Watchdog_Init();
+        CHECK(g_fake_iwdg.PR == WATCHDOG_PRESCALER, "预分频 = /64 -> 625Hz 计数");
+        CHECK(g_fake_iwdg.RLR == WATCHDOG_RELOAD, "重装值 = 625");
+        CHECK(g_fake_iwdg.KR == 0x0000CCCCU, "以 0xCCCC 启动（启动后软件不能关）");
+        CHECK((g_fake_dbgmcu.CR & DBGMCU_CR_DBG_IWDG_STOP) != 0,
+              "已置 DBG_IWDG_STOP：调试器暂停时冻结看门狗，不会踢复位");
+        CHECK(WATCHDOG_RELOAD <= 4095u, "重装值在 12 位范围内");
+
+        /* 标称超时 = 4 × 2^PRESCALER × RELOAD / 40000 (LSI 典型 40kHz) */
+        {
+            uint32_t nominal_ms = (uint32_t)(4UL << WATCHDOG_PRESCALER) * WATCHDOG_RELOAD / 40UL;
+            CHECK(nominal_ms == 1000u, "标称超时 = 1000ms（1 秒）");
+        }
+
+        /* 喂狗 */
+        g_fake_iwdg.KR = 0;
+        Watchdog_Feed();
+        CHECK(g_fake_iwdg.KR == 0x0000AAAAU, "喂狗写 0xAAAA（重装载）");
     }
 
     printf("\n结果: %d 通过, %d 失败\n", g_pass, g_fail);

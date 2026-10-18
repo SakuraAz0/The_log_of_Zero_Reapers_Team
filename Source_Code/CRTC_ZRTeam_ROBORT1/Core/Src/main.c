@@ -29,6 +29,7 @@
 #include "control.h"
 #include "led.h"
 #include "servo.h"
+#include "watchdog.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -141,6 +142,10 @@ int main(void)
   Ctrl_Init();
   RC_Init();
 
+  /* 看门狗放在所有初始化之后启动：避免 PS2_Init/自检等长流程被误判为死机。
+   * 启动后主循环每轮喂一次，1 秒内没喂 -> 自动复位（重新进入安全启动）。 */
+  Watchdog_Init();
+
   PS2_Data_t ps2;
   uint32_t last_read = 0;
   /* USER CODE END 2 */
@@ -149,6 +154,8 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   { // 每10ms读取一次手柄
+    Watchdog_Feed();     // 喂狗：本循环远快于 1s，不会误复位
+
     if (HAL_GetTick() - last_read >= 10)
     {
       last_read = HAL_GetTick();
