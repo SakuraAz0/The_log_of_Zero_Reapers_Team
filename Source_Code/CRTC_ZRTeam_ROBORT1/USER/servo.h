@@ -37,14 +37,14 @@
 // ===== 机械爪角度零点偏移（重要校准项）=====
 // 舵盘装在舵机花键上，一个齿 = 360/25 = **14.4°**，装偏一齿会让整段行程整体偏移。
 // 实测现象：张开端顶到/超过机械限位，同时闭合端合不到位
-//   -> 说明机构可用窗口整体偏低，需要**整体向下平移**；实测最佳值约 **12.5°**。
-// 单位是 **0.1°**：-125 = -12.5°。负值 = 向"角度更小"方向平移（脉宽变小）。
-// 12.5° ≈ 139us。当前取 -125，得到：全闭 362us、全开 1362us。
-// 现场微调：张开端还顶死就减（-130 / -135）；闭合端顶死发烫就加回来（-120 / -110 / 0）。
-#define SERVO_GRIP_ANGLE_SHIFT_DEG10   (-125)
-#define SERVO_GRIP_SHIFT_US            ((int32_t)SERVO_GRIP_ANGLE_SHIFT_DEG10 * 1000 / (90 * 10))  // -125 -> -138us
-#define SERVO2_MIN_US                  ((uint16_t)(500  + SERVO_GRIP_SHIFT_US))   // 现在 362us（全闭）
-#define SERVO2_MAX_US                  ((uint16_t)(1500 + SERVO_GRIP_SHIFT_US))   // 现在 1362us（全开）
+//   -> 说明机构可用窗口整体偏低，需要**整体向下平移**；实测最佳值 **13.5°**。
+// 单位是 **0.1°**：-135 = -13.5°。负值 = 向"角度更小"方向平移（脉宽变小）。
+// 13.5° = 150us。当前取 -135，得到：全闭 350us、全开 1350us。
+// 现场微调：张开端还顶死就减（-140 / -145）；闭合端顶死发烫就加回来（-130 / -120）。
+#define SERVO_GRIP_ANGLE_SHIFT_DEG10   (-135)
+#define SERVO_GRIP_SHIFT_US            ((int32_t)SERVO_GRIP_ANGLE_SHIFT_DEG10 * 1000 / (90 * 10))  // -135 -> -150us
+#define SERVO2_MIN_US                  ((uint16_t)(500  + SERVO_GRIP_SHIFT_US))   // 现在 350us（全闭）
+#define SERVO2_MAX_US                  ((uint16_t)(1500 + SERVO_GRIP_SHIFT_US))   // 现在 1350us（全开）
 
 // ===== 每路舵机的机械角度范围（用于 Servo_SetAngle）=====
 // 注意：机械爪的 0°/90° 指的是**机构**的全闭/全开（已含上面的零点偏移），
@@ -105,7 +105,7 @@ extern volatile uint8_t g_servo_grip_mode;
 #ifndef SERVO_CALIBRATE_CH
 #define SERVO_CALIBRATE_CH 0
 #endif
-#define SERVO_CALIBRATE_STEP_US 50      // 每步 50us（约 4.5°）
+#define SERVO_CALIBRATE_STEP_US 30      // 每步 50us（约 4.5°）
 #define SERVO_CALIBRATE_STEP_MS 2000    // 每步保持 2 秒，方便观察
 
 void     Servo_Init(void);
@@ -121,6 +121,8 @@ uint16_t Servo_GetTarget(uint8_t ch);   // 目标脉宽
 
 // 机械爪控制模式
 uint8_t  Servo_GetGripMode(void);       // 0=点动保持，1=一键张合
-void     Servo_SetGripMode(uint8_t mode);   // 切到 ONESHOT 时会把目标设为"完全张开"
+// 切换机械爪控制模式。注意：**切换时不会让机械爪立刻动作**（保持当前位置不变），
+// 只有按下 □ / ○ 之后才会一次走到对应端点。
+void     Servo_SetGripMode(uint8_t mode);
 
 #endif

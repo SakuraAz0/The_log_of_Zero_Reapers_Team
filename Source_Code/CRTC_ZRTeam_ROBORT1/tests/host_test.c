@@ -673,22 +673,22 @@ int main(void)
               "关节舵机行程 >= 2000us（足够转到 180°）");
         CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_OPEN_US,
               "机械爪上电停在完全张开（= SERVO2_MAX_US）");
-        CHECK(SERVO_GRIP_ANGLE_SHIFT_DEG10 == -125,
-              "机械爪行程整体下移 12.5°（-125 个 0.1°，实测最佳值）");
-        CHECK(SERVO_GRIP_SHIFT_US == -138, "12.5° 对应 -138us");
-        CHECK(SERVO2_MIN_US == 362 && SERVO2_MAX_US == 1362,
-              "平移后：全闭 362us ~ 全开 1362us");
+        CHECK(SERVO_GRIP_ANGLE_SHIFT_DEG10 == -135,
+              "机械爪行程整体下移 13.5°（-135 个 0.1°，实测最佳值）");
+        CHECK(SERVO_GRIP_SHIFT_US == -150, "13.5° 对应 -150us");
+        CHECK(SERVO2_MIN_US == 350 && SERVO2_MAX_US == 1350,
+              "平移后：全闭 350us ~ 全开 1350us");
 
         /* 角度接口：机械爪 0=全闭、90=全开（角度是"机构角度"，已含零点偏移） */
         Servo_SetAngle(SERVO_CH_GRIPPER, 0);
-        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MIN_US, "爪 0° -> 362us（完全闭合）");
+        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MIN_US, "爪 0° -> 350us（完全闭合）");
         Servo_SetAngle(SERVO_CH_GRIPPER, 90);
-        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MAX_US, "爪 90° -> 1362us（完全张开）");
+        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MAX_US, "爪 90° -> 1350us（完全张开）");
         Servo_SetAngle(SERVO_CH_GRIPPER, 45);
-        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == 862, "爪 45° -> 862us（半开）");
+        CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == 850, "爪 45° -> 850us（半开）");
         Servo_SetAngle(SERVO_CH_GRIPPER, 200);
         CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO2_MAX_US, "角度超范围 -> 限幅到 90°");
-        CHECK(SERVO_GRIP_CLOSE_US == 695, "一键式合上端点 = 695us（机构 30°）");
+        CHECK(SERVO_GRIP_CLOSE_US == 683, "一键式合上端点 = 683us（机构 30°）");
         Servo_SetAngle(SERVO_CH_JOINT1, 180);
         CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == 2500, "关节 180° -> 2500us");
         Servo_SetAngle(SERVO_CH_JOINT1, 90);
@@ -780,13 +780,25 @@ int main(void)
                   "点动：按住 □ 向张开方向逐步走");
         }
 
-        /* 再切回一键模式：目标复位为完全张开 */
-        s_tick += SERVO_MODE_TOGGLE_MS;
-        Servo_Task((uint16_t)(~PS2_BTN_SELECT));
-        CHECK(Servo_GetGripMode() == SERVO_GRIP_MODE_ONESHOT, "再按 SELECT -> 切回一键张合");
-        CHECK(Servo_GetTarget(SERVO_CH_GRIPPER) == SERVO_GRIP_OPEN_US,
-              "切回一键模式时目标复位为完全张开");
-        Servo_Task(0xFFFF);
+        /* 再切回一键模式：不应立刻动作，按键后才走到端点 */
+        {
+            uint16_t tgt_before = Servo_GetTarget(SERVO_CH_GRIPPER);
+
+            s_tick += SERVO_MODE_TOGGLE_MS;
+            Servo_Task((uint16_t)(~PS2_BTN_SELECT));
+            CHECK(Servo_GetGripMode() == SERVO_GRIP_MODE_ONESHOT, "再按 SELECT -> 切回一键张合");
+            CHECK(Servo_GetTarget(SERVO_CH_GRIPPER) == tgt_before &&
+                  tgt_before != SERVO_GRIP_OPEN_US,
+                  "切模式不会立刻改变目标（保持当前位置，不会自己跑回张开位）");
+
+            for (int i = 0; i < 5; i++) Servo_Task(0xFFFF);     /* 松开 SELECT */
+            CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == tgt_before,
+                  "切换后松开按键，机械爪停在原位不动作");
+
+            for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_CIRCLE));
+            CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_CLOSE_US,
+                  "切换后按 ○ 才一次走到闭合端点（683us）");
+        }
     }
 
     /* ---------- 9. 掉出模拟模式自动拉回 ---------- */

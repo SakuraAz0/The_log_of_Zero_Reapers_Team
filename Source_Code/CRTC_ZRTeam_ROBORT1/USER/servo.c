@@ -169,9 +169,9 @@ void Servo_SetGripMode(uint8_t mode)
 {
     g_servo_grip_mode = (mode == SERVO_GRIP_MODE_JOG) ? SERVO_GRIP_MODE_JOG : SERVO_GRIP_MODE_ONESHOT;
 
-    /* 切到"一键张合"模式时，按该模式的定义把目标设为"完全张开"（初始位置） */
-    if (g_servo_grip_mode == SERVO_GRIP_MODE_ONESHOT)
-        set_abs_target(SERVO_CH_GRIPPER, deg_to_us(SERVO_CH_GRIPPER, SERVO_GRIP_OPEN_DEG));
+    /* 注意：切换模式时**不改变目标位置**——机械爪保持当前位置不动，
+     * 只有操作手按下 □ / ○ 之后才会一次走到对应端点。
+     * （否则从点动模式按 SELECT 切到一键模式时，爪子会突然自己跑回张开位，很吓人） */
 }
 
 // 向目标插值（每 tick 最多 SERVO_SLEW_US_PER_TICK）
