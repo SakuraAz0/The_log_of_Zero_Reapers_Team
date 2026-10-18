@@ -33,3 +33,15 @@ void LED_AllOff(void)
 {
     HAL_GPIO_WritePin(LED_PORT, LED_PIN_SLOW | LED_PIN_MID | LED_PIN_FAST, GPIO_PIN_RESET);
 }
+
+/* 诊断用：慢速 LED 闪 count 次（亮 150ms / 灭 250ms），用于开机用"闪码"显示上次复位原因 */
+void LED_BlinkCode(uint8_t count)
+{
+    for (uint8_t i = 0; i < count; i++)
+    {
+        HAL_GPIO_WritePin(LED_PORT, LED_PIN_SLOW, GPIO_PIN_SET);
+        HAL_Delay(150);
+        HAL_GPIO_WritePin(LED_PORT, LED_PIN_SLOW, GPIO_PIN_RESET);
+        HAL_Delay(250);
+    }
+}

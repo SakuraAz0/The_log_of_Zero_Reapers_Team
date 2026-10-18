@@ -17,4 +17,7 @@ void LED_Init(void);
 void LED_SetGear(uint8_t gear);      /* 0=慢 1=中 2=快；只点亮对应那一个 */
 void LED_AllOff(void);
 
+/* 诊断用：用慢速 LED(PA8) 闪 count 次（约 150ms 亮 / 250ms 灭），用于开机显示复位原因 */
+void LED_BlinkCode(uint8_t count);
+
 #endif

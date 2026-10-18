@@ -38,7 +38,14 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+/* 诊断开关：置 1 则上电时用慢速 LED(PA8) 闪码显示"上次复位原因"（不接调试器也能看）。
+ *   闪 1 次 = 只有 PINRSTF          -> 复位脚(NRST)被干扰拉低（EMI，电源没问题）
+ *   闪 2 次 = PORRSTF 且无 PIN      -> 上电/欠压类（供电被切断/塌陷）
+ *   闪 3 次 = PIN + SFTRSTF         -> 调试器/烧录器发起的复位（正常，不是故障）
+ *   闪 4 次 = POR + PIN             -> 断电式复位（既掉电又过复位脚）
+ *   闪 5 次 = 其它
+ * 每次开机闪 3 遍（每遍之间停 1.2s），测完请改回 0。 */
+#define BOOT_RESET_CAUSE_BLINK  0
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -109,6 +116,27 @@ int main(void)
   Bringup_Halt(6);
 
   LED_Init();          // 档位指示 LED：PA8=慢 PA11=中 PA12=快
+#if BOOT_RESET_CAUSE_BLINK
+  {
+      /* 用闪码显示上次复位原因（见 USER CODE PD 的说明） */
+      uint8_t code;
+
+      if (g_reset_cause & 0x08000000u)                                   /* POR 置位 */
+          code = (g_reset_cause & 0x04000000u) ? 4u : 2u;
+      else if (g_reset_cause & 0x04000000u)                              /* 只有 PIN */
+          code = (g_reset_cause & 0x10000000u) ? 3u : 1u;
+      else if (g_reset_cause & 0x10000000u)                              /* 只有 SFT */
+          code = 3u;
+      else
+          code = 5u;
+
+      for (uint8_t r = 0; r < 3; r++)
+      {
+          LED_BlinkCode(code);
+          HAL_Delay(1200);
+      }
+  }
+#endif
   Servo_Init();        // 舵机 PWM：TIM3 (PA6/PA7/PB0/PB1)，50Hz
   Ctrl_Init();
   RC_Init();
