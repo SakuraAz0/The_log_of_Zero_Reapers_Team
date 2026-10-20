@@ -153,7 +153,12 @@ uint8_t RC_Feed(const PS2_Data_t *data)
     dt = now - s_last_change_ms;                       // 无符号相减，可正确处理 tick 回绕
     g_rc_dbg.unchanged_ms = (dt > 0xFFFFu) ? 0xFFFFu : (uint16_t)dt;
 
-    if (dt >= RC_STALE_TIMEOUT_MS)
+    /* 失联判据（混合，见 rc.h）：
+     *   ① 数据不变 且 四轴都在中位，持续 RC_STALE_TIMEOUT_MS      -> 失联（手柄关机时接收器回中位）
+     *   ② 数据不变（不论位置）持续 RC_STALE_TIMEOUT_LONG_MS        -> 兜底
+     * 这样"稳定保持摇杆匀速行驶超过 10 秒"不会被误判停车。 */
+    if (((dt >= RC_STALE_TIMEOUT_MS) && rc_sticks_centered(data)) ||
+        (dt >= RC_STALE_TIMEOUT_LONG_MS))
     {
         if (!g_rc_dbg.stale)
             g_rc_dbg.protect_count++;

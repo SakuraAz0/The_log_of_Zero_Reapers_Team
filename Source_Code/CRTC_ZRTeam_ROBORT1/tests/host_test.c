@@ -384,12 +384,29 @@ int main(void)
     /* 失联保护：数据逐字节不变超过超时 */
     CHECK(RC_Feed(&d) == 1, "数据未变但未到超时时间仍允许");
     s_tick += RC_STALE_TIMEOUT_MS + 100;
-    CHECK(RC_Feed(&d) == 0, "数据逐字节不变超过超时 -> 保护停车");
+    CHECK(RC_Feed(&d) == 0, "中位且数据逐字节不变超过超时 -> 保护停车");
     CHECK(g_rc_dbg.stale == 1 && g_rc_dbg.protect_count == 1, "失联保护标志与计数正确");
 
     d.left_x = 0x81;                                   /* 操作手动一下摇杆 */
     CHECK(RC_Feed(&d) == 1, "数据一变化立即恢复驱动");
     CHECK(g_rc_dbg.stale == 0 && g_rc_dbg.unchanged_ms == 0, "恢复后失联标志清零");
+    d.left_x = 0x80;
+
+    /* ===== 混合判据：稳定保持摇杆（非中位）不变，不应被误判失联 ===== */
+    s_tick += RC_STALE_TIMEOUT_MS + 100;               /* 从上一帧起算已超过 10s */
+    d.left_x = 0x30;                                   /* 摇杆推到一侧并稳住（远离中位） */
+    CHECK(RC_Feed(&d) == 1, "摇杆保持非中位：起算一帧");
+    s_tick += RC_STALE_TIMEOUT_MS + 1000;              /* 非中位、数据不变，超过 10s */
+    CHECK(RC_Feed(&d) == 1,
+          "匀速行驶关键：摇杆稳定保持在非中位超过 10s 不被误判失联");
+    CHECK(g_rc_dbg.stale == 0, "非中位保持不动 -> stale 仍为 0");
+
+    /* 但超过"兜底 60 秒"仍要保护 */
+    s_tick += RC_STALE_TIMEOUT_LONG_MS;
+    CHECK(RC_Feed(&d) == 0, "任意状态数据不变超过 60s 兜底 -> 保护停车");
+    CHECK(g_rc_dbg.stale == 1, "兜底保护生效（stale=1）");
+    d.left_x = 0x2F;                                   /* 动一下 */
+    CHECK(RC_Feed(&d) == 1 && g_rc_dbg.stale == 0, "兜底保护后一动即恢复");
     d.left_x = 0x80;
 
     /* 时间回绕：tick 从 0xFFFFFF00 走到 0x00000100 不应误判 */
