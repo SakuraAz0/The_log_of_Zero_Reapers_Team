@@ -20,4 +20,8 @@ void LED_AllOff(void);
 /* 诊断用：用慢速 LED(PA8) 闪 count 次（约 150ms 亮 / 250ms 灭），用于开机显示复位原因 */
 void LED_BlinkCode(uint8_t count);
 
+/* 诊断用（非阻塞）：快速档 LED(PA12) 每 2 秒按 code 次数闪烁，表示"当前为什么不能驱动"：
+ *   0 = 不闪（正常）  1 = 未 armed  2 = 数字模式  3 = 失联保护（数据10s没变）  4 = 读不到手柄 */
+void LED_DiagCode(uint8_t code);
+
 #endif

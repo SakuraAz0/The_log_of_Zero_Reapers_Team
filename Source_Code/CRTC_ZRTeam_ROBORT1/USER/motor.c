@@ -19,6 +19,9 @@
 #define MOTOR_SIGN_RF  (+1)
 #define MOTOR_SIGN_RR  (+1)
 
+// ===== 软启动（防启动浪涌 / 降低电机线 dV/dt 干扰）=====
+// 开关与步长宏定义在 motor.h（MOTOR_SLEW_ENABLE / MOTOR_SLEW_STEP），此处直接用。
+
 typedef struct {
     TIM_HandleTypeDef *htim_pwm;   // PWM引脚所在定时器
     uint32_t pwm_channel;          // PWM通道
@@ -102,6 +105,9 @@ void Motor_StopAll(void)
 {
     for (uint8_t i = 0; i < 4; i++)
         Motor_SetPWM(i, 0);
+#if MOTOR_SLEW_ENABLE
+    Motor_SlewReset();       // 停车后清软启动状态，下次起步从 0 开始爬
+#endif
 }
 
 // ===== 全部刹车（✕ 键用）=====
@@ -118,6 +124,9 @@ void Motor_BrakeAll(void)
         Motor_SetPWM(i, 0);
 #endif
     }
+#if MOTOR_SLEW_ENABLE
+    Motor_SlewReset();       // 刹车后清软启动状态，松开刹车时从 0 开始爬
+#endif
 }
 
 // ===== 麦轮运动学逆解（标准 X 型布局）=====
@@ -129,7 +138,8 @@ void Motor_BrakeAll(void)
 //       方向标定统一在 USER/control.h 的 CTRL_*_SIGN 宏里做。
 //
 // limit: 四轮输出上限（等比缩放，保持四轮比例 = 不改变运动方向）
-static void mecanum_apply(int16_t vx, int16_t vy, int16_t vw, int16_t limit)
+// out[4]: 依次为 LF / LR / RF / RR 的占空比（-1000~1000）
+static void mecanum_compute(int16_t vx, int16_t vy, int16_t vw, int16_t limit, int16_t out[4])
 {
     int16_t speed_lf, speed_lr, speed_rf, speed_rr;
 
@@ -143,23 +153,34 @@ static void mecanum_apply(int16_t vx, int16_t vy, int16_t vw, int16_t limit)
     speed_lr =  vx - vy + vw;   // 左后
     speed_rr =  vx + vy - vw;   // 右后
 
+    out[0] = speed_lf;
+    out[1] = speed_lr;
+    out[2] = speed_rf;
+    out[3] = speed_rr;
+
     // 饱和处理：任一轴超程时按最大绝对值等比缩小，保证运动方向不变
     // （逐轮单独限幅会改变四轮比例，导致斜移/旋转时方向畸变）
-    int16_t vals[4] = {speed_lf, speed_lr, speed_rf, speed_rr};
     int16_t peak = 0;
     for (uint8_t i = 0; i < 4; i++) {
-        int16_t a = (vals[i] < 0) ? (int16_t)(-vals[i]) : vals[i];
+        int16_t a = (out[i] < 0) ? (int16_t)(-out[i]) : out[i];
         if (a > peak) peak = a;
     }
     if (peak > limit) {
         for (uint8_t i = 0; i < 4; i++)
-            vals[i] = (int16_t)((int32_t)vals[i] * limit / peak);
+            out[i] = (int16_t)((int32_t)out[i] * limit / peak);
     }
     // 兜底限幅
     for (uint8_t i = 0; i < 4; i++) {
-        if (vals[i] > limit)  vals[i] = limit;
-        if (vals[i] < -limit) vals[i] = -limit;
+        if (out[i] > limit)  out[i] = limit;
+        if (out[i] < -limit) out[i] = -limit;
     }
+}
+
+static void mecanum_apply(int16_t vx, int16_t vy, int16_t vw, int16_t limit)
+{
+    int16_t vals[4];
+
+    mecanum_compute(vx, vy, vw, limit, vals);
 
     // 设置四个电机
     Motor_SetPWM(MOTOR_LF, vals[0]);
@@ -178,6 +199,46 @@ void Mecanum_MoveLimit(int16_t vx, int16_t vy, int16_t vw, int16_t limit)
 {
     mecanum_apply(vx, vy, vw, limit);
 }
+
+/* ===== 软启动：限制每个轮子每 10ms 的占空比变化量 =====
+ * 目的：指令跳变（比如推杆从 0 直接到 60%）时，不让四个电机同时瞬变，
+ *       把启动浪涌电流和电机线上的 dV/dt（电磁干扰源）大幅削掉。
+ * 主循环 10ms 调一次，所以"每 tick 60"= 满量程约 170ms 爬到位。 */
+#if MOTOR_SLEW_ENABLE
+static int16_t s_slew_state[4] = {0, 0, 0, 0};
+
+static int16_t slew_step(int16_t cur, int16_t tgt)
+{
+    if (tgt > (int16_t)(cur + MOTOR_SLEW_STEP)) return (int16_t)(cur + MOTOR_SLEW_STEP);
+    if (tgt < (int16_t)(cur - MOTOR_SLEW_STEP)) return (int16_t)(cur - MOTOR_SLEW_STEP);
+    return tgt;
+}
+
+/* 清零软启动状态：停车/刹车后调用，保证下次起步从 0 开始爬 */
+void Motor_SlewReset(void)
+{
+    for (uint8_t i = 0; i < 4; i++) s_slew_state[i] = 0;
+}
+
+// 带软启动的版本（主循环用这个）
+void Mecanum_MoveLimitSlew(int16_t vx, int16_t vy, int16_t vw, int16_t limit)
+{
+    int16_t vals[4];
+
+    mecanum_compute(vx, vy, vw, limit, vals);
+
+    for (uint8_t i = 0; i < 4; i++)
+    {
+        s_slew_state[i] = slew_step(s_slew_state[i], vals[i]);
+        vals[i] = s_slew_state[i];
+    }
+
+    Motor_SetPWM(MOTOR_LF, vals[0]);
+    Motor_SetPWM(MOTOR_LR, vals[1]);
+    Motor_SetPWM(MOTOR_RF, vals[2]);
+    Motor_SetPWM(MOTOR_RR, vals[3]);
+}
+#endif  /* MOTOR_SLEW_ENABLE */
 
 // ===== 四轮接线自检（由 MOTOR_SELFTEST_ENABLE 控制）=====
 #if MOTOR_SELFTEST_ENABLE

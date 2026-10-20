@@ -46,10 +46,13 @@
  *   闪 4 次 = POR + PIN             -> 断电式复位（既掉电又过复位脚）
  *   闪 5 次 = 其它
  * 每次开机闪 3 遍（每遍之间停 1.2s），测完请改回 0。 */
-#define BOOT_RESET_CAUSE_BLINK  0
-/* 诊断开关：未 armed（安全启动没过/数字模式）时"快速档"LED(PA12) 5Hz 闪，
- * 方便不用调试器就判断"车不动是不是因为没 armed"。正常只在上电后约 0.2s 内闪几下。 */
-#define LED_BLINK_WHILE_DISARMED 1
+#define BOOT_RESET_CAUSE_BLINK  1
+/* 诊断开关：当前无法驱动时，用"快速档"LED(PA12) 闪码表示原因（详见 led.h / 文档）：
+ *   ＜不闪＞ = 正常可驱动     1 闪 = 未 armed（摇杆没回中/数据被拒）
+ *   2 闪 = 手柄掉出模拟模式（绿灯）   3 闪 = 失联保护（数据 10 秒没变化）
+ *   4 闪 = 完全读不到手柄（通信失败）
+ * 每 2 秒一轮。正常行驶时不闪；想关掉就把下面改成 0。 */
+#define LED_DIAG_BLINK          1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -177,9 +180,13 @@ int main(void)
           if (Ctrl_Update(&ps2, enabled, &cmd))
           {
             if (cmd.brake)
-              Motor_BrakeAll();                     // SELECT：真刹车
+              Motor_BrakeAll();                     // START：真刹车
             else
-              Mecanum_MoveLimit(cmd.vx, cmd.vy, cmd.vw, cmd.limit);  // 按档位限幅
+#if MOTOR_SLEW_ENABLE
+              Mecanum_MoveLimitSlew(cmd.vx, cmd.vy, cmd.vw, cmd.limit);  // 软启动 + 档位限幅
+#else
+              Mecanum_MoveLimit(cmd.vx, cmd.vy, cmd.vw, cmd.limit);      // 按档位限幅
+#endif
           }
           else
           {
@@ -188,12 +195,13 @@ int main(void)
 
           LED_SetGear(cmd.gear);                    // 档位指示
 
-#if LED_BLINK_WHILE_DISARMED
-          /* 诊断：未 armed（安全启动没过 / 数据异常）时让"快速档"LED 以 5Hz 闪。
-             正常只在上电后约 0.2 秒内闪几下；**一直闪 = 摇杆没回中或数据被拒** → 车不会动 */
-          if (!enabled)
-            HAL_GPIO_WritePin(LED_PORT, LED_PIN_FAST,
-                              ((HAL_GetTick() / 100U) & 1U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+#if LED_DIAG_BLINK
+          /* 不能驱动时用"闪码"告诉操作手原因（详见 led.h）：
+           * 1 闪=未 armed  2 闪=数字模式  3 闪=失联保护(数据10s没变)  4 闪=读不到手柄  不闪=正常 */
+          if (enabled)
+            LED_DiagCode(0u);
+          else
+            LED_DiagCode(g_rc_dbg.armed ? 3u : 1u);
 #endif
         }
         else
@@ -206,10 +214,8 @@ int main(void)
 
           (void)Ctrl_Update(&ps2, 0, &cmd);         // 仅为刷新档位显示
           LED_SetGear(cmd.gear);
-#if LED_BLINK_WHILE_DISARMED
-          /* 数字模式 = 不可驱动，同样让"快速档"LED 闪，提示操作手 */
-          HAL_GPIO_WritePin(LED_PORT, LED_PIN_FAST,
-                            ((HAL_GetTick() / 100U) & 1U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+#if LED_DIAG_BLINK
+          LED_DiagCode(2u);                         // 2 闪 = 手柄处于数字(绿灯)模式
 #endif
         }
       }
@@ -218,6 +224,9 @@ int main(void)
         /* 通信失败：停车并强制重新安全启动 */
         Motor_StopAll();
         RC_ForceReArm();
+#if LED_DIAG_BLINK
+        LED_DiagCode(4u);                          // 4 闪 = 完全读不到手柄
+#endif
       }
     }
     /* USER CODE END WHILE */

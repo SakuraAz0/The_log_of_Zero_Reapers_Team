@@ -23,6 +23,17 @@
 #define MOTOR_BRAKE_BOTH_HIGH  1
 #endif
 
+// ===== 软启动（防启动浪涌 / 降低电机线 dV/dt 干扰）=====
+// 主循环 10ms 调一次 Mecanum_MoveLimitSlew()，每个轮子每次最多变化 MOTOR_SLEW_STEP。
+// 60 = 满量程(1000)约 170ms 爬到位；想更快调大（100 -> 100ms），更柔和调小（30 -> 330ms）。
+// 这是"输出斜坡"，不改变任何控制逻辑（档位/方向/合成关系都不变）。
+#ifndef MOTOR_SLEW_ENABLE
+#define MOTOR_SLEW_ENABLE 1
+#endif
+#ifndef MOTOR_SLEW_STEP
+#define MOTOR_SLEW_STEP   60
+#endif
+
 // ===== 函数声明 =====
 void Motor_Init(void);
 void Motor_SetPWM(uint8_t motor, int16_t speed);
@@ -30,6 +41,14 @@ void Motor_StopAll(void);
 void Motor_BrakeAll(void);
 void Mecanum_Move(int16_t vx, int16_t vy, int16_t vw);
 void Mecanum_MoveLimit(int16_t vx, int16_t vy, int16_t vw, int16_t limit);
+
+// ===== 软启动（主循环用这个）=====
+// 与 Mecanum_MoveLimit 相同，但每个轮子每次调用最多变化 MOTOR_SLEW_STEP（motor.c 里的宏），
+// 用来削掉启动浪涌电流和电机线 dV/dt 干扰。主循环 10ms 调一次。
+#if MOTOR_SLEW_ENABLE
+void Mecanum_MoveLimitSlew(int16_t vx, int16_t vy, int16_t vw, int16_t limit);
+void Motor_SlewReset(void);      // 清零软启动状态（Motor_StopAll/BrakeAll 内部已自动调用）
+#endif
 
 #if MOTOR_SELFTEST_ENABLE
 void Motor_SelfTest(void);

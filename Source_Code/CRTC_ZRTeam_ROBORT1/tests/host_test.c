@@ -642,6 +642,39 @@ int main(void)
         CHECK((s_gpio_a_odr & LED_PIN_MID) != 0 && (s_gpio_a_odr & LED_PIN_SLOW) == 0, "档位 1 -> 只亮中速 LED");
         LED_SetGear(2);
         CHECK((s_gpio_a_odr & LED_PIN_FAST) != 0 && (s_gpio_a_odr & LED_PIN_MID) == 0, "档位 2 -> 只亮快速 LED");
+
+        /* 诊断闪码 LED_DiagCode：PA12 每 2 秒按次数闪（150ms 亮 / 150ms 灭） */
+        {
+            s_tick = 0;
+            s_gpio_a_odr = 0;
+            LED_DiagCode(1);                       /* 1 闪 */
+            CHECK((s_gpio_a_odr & LED_PIN_FAST) != 0, "闪码1：t=0 时 PA12 亮");
+            s_tick = 200;
+            LED_DiagCode(1);
+            CHECK((s_gpio_a_odr & LED_PIN_FAST) == 0, "闪码1：t=200ms 时 PA12 灭（一闪结束）");
+            s_tick = 300;
+            LED_DiagCode(1);
+            CHECK((s_gpio_a_odr & LED_PIN_FAST) == 0, "闪码1：一轮内不再亮");
+
+            s_tick = 0;
+            LED_DiagCode(3);                       /* 3 闪 */
+            CHECK((s_gpio_a_odr & LED_PIN_FAST) != 0, "闪码3：第 1 闪开始亮");
+            s_tick = 300;
+            LED_DiagCode(3);
+            CHECK((s_gpio_a_odr & LED_PIN_FAST) != 0, "闪码3：t=300ms 第 2 闪亮");
+            s_tick = 600;
+            LED_DiagCode(3);
+            CHECK((s_gpio_a_odr & LED_PIN_FAST) != 0, "闪码3：t=600ms 第 3 闪亮");
+            s_tick = 1000;
+            LED_DiagCode(3);
+            CHECK((s_gpio_a_odr & LED_PIN_FAST) == 0, "闪码3：闪完后熄灭到本轮结束");
+
+            /* code=0 不碰引脚（把控制权交回 LED_SetGear） */
+            s_gpio_a_odr = 0;
+            LED_SetGear(2);                        /* 快速档：PA12 亮 */
+            LED_DiagCode(0);
+            CHECK((s_gpio_a_odr & LED_PIN_FAST) != 0, "闪码0：不干扰档位 LED（PA12 仍亮）");
+        }
     }
 
     /* 刹车输出：DRV8833 双输入 100% */
@@ -871,6 +904,51 @@ int main(void)
         CHECK(g_ps2_dbg.mode_recover_count == c1, "模拟模式正常时不重发配置");
     }
 
+    /* ---------- 10b. 软启动斜坡（Mecanum_MoveLimitSlew） ---------- */
+    printf("[10b] 电机软启动\n");
+#if MOTOR_SLEW_ENABLE
+    {
+        memset(&g_fake_tim2, 0, sizeof g_fake_tim2);
+        memset(&g_fake_tim4, 0, sizeof g_fake_tim4);
+        Motor_StopAll();                        /* 顺带清零软启动状态 */
+
+        /* 一步：应该只走 MOTOR_SLEW_STEP，而不是直接给到目标 */
+        Mecanum_MoveLimitSlew(1000, 0, 0, 1000);
+        CHECK(g_fake_tim2.CCR1 == (uint32_t)MOTOR_SLEW_STEP &&
+              g_fake_tim2.CCR3 == (uint32_t)MOTOR_SLEW_STEP &&
+              g_fake_tim4.CCR1 == (uint32_t)MOTOR_SLEW_STEP &&
+              g_fake_tim4.CCR3 == (uint32_t)MOTOR_SLEW_STEP,
+              "软启动：第一步只给 MOTOR_SLEW_STEP（不会一步跳到位）");
+
+        /* 连续调用足够多次后应到达目标 */
+        for (int i = 0; i < 40; i++) Mecanum_MoveLimitSlew(1000, 0, 0, 1000);
+        CHECK(g_fake_tim2.CCR1 == 1000 && g_fake_tim2.CCR3 == 1000 &&
+              g_fake_tim4.CCR1 == 1000 && g_fake_tim4.CCR3 == 1000,
+              "软启动：持续调用后爬到目标值");
+
+        /* 反向：从 +1000 到 -1000 也要逐步过渡（不会瞬间反接） */
+        memset(&g_fake_tim2, 0, sizeof g_fake_tim2);
+        memset(&g_fake_tim4, 0, sizeof g_fake_tim4);
+        Mecanum_MoveLimitSlew(-1000, 0, 0, 1000);
+        CHECK(g_fake_tim2.CCR1 == (uint32_t)(1000 - MOTOR_SLEW_STEP),
+              "软启动：正转->反转是逐步过渡（一步只降 MOTOR_SLEW_STEP，不瞬间反接）");
+        for (int i = 0; i < 40; i++) Mecanum_MoveLimitSlew(-1000, 0, 0, 1000);
+        CHECK(g_fake_tim2.CCR2 == 1000 && g_fake_tim2.CCR1 == 0,
+              "软启动：逐步过渡后完成反转（IN2 占到空比、IN1 归零）");
+
+        /* 停车会清零软启动状态：再起步又是从 MOTOR_SLEW_STEP 开始 */
+        Motor_StopAll();
+        memset(&g_fake_tim2, 0, sizeof g_fake_tim2);
+        Mecanum_MoveLimitSlew(1000, 0, 0, 1000);
+        CHECK(g_fake_tim2.CCR1 == (uint32_t)MOTOR_SLEW_STEP,
+              "停车后软启动状态清零（下次起步从零开始爬）");
+
+        Motor_SlewReset();
+    }
+#else
+    printf("  [SKIP] MOTOR_SLEW_ENABLE=0\n");
+#endif
+
     /* ---------- 10. 独立看门狗（IWDG，1 秒超时） ---------- */
     printf("[10] 独立看门狗\n");
     {
@@ -906,6 +984,5 @@ int main(void)
 #endif
     }
 
-    printf("\n结果: %d 通过, %d 失败\n", g_pass, g_fail);
-    return g_fail ? 1 : 0;
+    printf("\n结果: %d 通过, %d 失败\n", g_pass, g_fail);    return g_fail ? 1 : 0;
 }
