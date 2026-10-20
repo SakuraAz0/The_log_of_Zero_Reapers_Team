@@ -21,9 +21,11 @@
 
 #include "main.h"
 
-/* 置 0 可整体关闭（台架自检、或需要用调试器长时间暂停时临时关掉） */
+/* 置 0 可整体关闭（台架自检、或用调试器长时间暂停时临时关掉）
+ * 【临时置 0】排查"另一辆车 PA0/PA1 无 PWM、车不动"时先关掉看门狗排除它。
+ * 排查结束后请改回 1。 */
 #ifndef WATCHDOG_ENABLE
-#define WATCHDOG_ENABLE     1
+#define WATCHDOG_ENABLE     0
 #endif
 
 /* IWDG_PR 编码：0=/4 1=/8 2=/16 3=/32 4=/64 5=/128 6=/256 */

@@ -47,6 +47,9 @@
  *   闪 5 次 = 其它
  * 每次开机闪 3 遍（每遍之间停 1.2s），测完请改回 0。 */
 #define BOOT_RESET_CAUSE_BLINK  0
+/* 诊断开关：未 armed（安全启动没过/数字模式）时"快速档"LED(PA12) 5Hz 闪，
+ * 方便不用调试器就判断"车不动是不是因为没 armed"。正常只在上电后约 0.2s 内闪几下。 */
+#define LED_BLINK_WHILE_DISARMED 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -184,6 +187,14 @@ int main(void)
           }
 
           LED_SetGear(cmd.gear);                    // 档位指示
+
+#if LED_BLINK_WHILE_DISARMED
+          /* 诊断：未 armed（安全启动没过 / 数据异常）时让"快速档"LED 以 5Hz 闪。
+             正常只在上电后约 0.2 秒内闪几下；**一直闪 = 摇杆没回中或数据被拒** → 车不会动 */
+          if (!enabled)
+            HAL_GPIO_WritePin(LED_PORT, LED_PIN_FAST,
+                              ((HAL_GetTick() / 100U) & 1U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+#endif
         }
         else
         {
@@ -195,6 +206,11 @@ int main(void)
 
           (void)Ctrl_Update(&ps2, 0, &cmd);         // 仅为刷新档位显示
           LED_SetGear(cmd.gear);
+#if LED_BLINK_WHILE_DISARMED
+          /* 数字模式 = 不可驱动，同样让"快速档"LED 闪，提示操作手 */
+          HAL_GPIO_WritePin(LED_PORT, LED_PIN_FAST,
+                            ((HAL_GetTick() / 100U) & 1U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+#endif
         }
       }
       else

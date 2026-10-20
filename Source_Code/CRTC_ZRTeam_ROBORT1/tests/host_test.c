@@ -878,6 +878,7 @@ int main(void)
         memset(&g_fake_dbgmcu, 0, sizeof g_fake_dbgmcu);
 
         Watchdog_Init();
+#if WATCHDOG_ENABLE
         CHECK(g_fake_iwdg.PR == WATCHDOG_PRESCALER, "预分频 = /64 -> 625Hz 计数");
         CHECK(g_fake_iwdg.RLR == WATCHDOG_RELOAD, "重装值 = 625");
         CHECK(g_fake_iwdg.KR == 0x0000CCCCU, "以 0xCCCC 启动（启动后软件不能关）");
@@ -895,6 +896,14 @@ int main(void)
         g_fake_iwdg.KR = 0;
         Watchdog_Feed();
         CHECK(g_fake_iwdg.KR == 0x0000AAAAU, "喂狗写 0xAAAA（重装载）");
+#else
+        /* WATCHDOG_ENABLE=0：Init/Feed 必须是空操作（不启动、不写寄存器） */
+        CHECK(g_fake_iwdg.PR == 0 && g_fake_iwdg.RLR == 0 && g_fake_iwdg.KR == 0,
+              "看门狗已关闭：Init 不写 IWDG 寄存器");
+        CHECK(g_fake_dbgmcu.CR == 0, "看门狗已关闭：不改 DBGMCU_CR");
+        Watchdog_Feed();
+        CHECK(g_fake_iwdg.KR == 0, "看门狗已关闭：Feed 为空操作");
+#endif
     }
 
     printf("\n结果: %d 通过, %d 失败\n", g_pass, g_fail);
