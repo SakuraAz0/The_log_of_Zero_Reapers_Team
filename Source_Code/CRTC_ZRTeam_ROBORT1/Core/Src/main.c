@@ -44,15 +44,17 @@
  *   闪 2 次 = PORRSTF 且无 PIN      -> 上电/欠压类（供电被切断/塌陷）
  *   闪 3 次 = PIN + SFTRSTF         -> 调试器/烧录器发起的复位（正常，不是故障）
  *   闪 4 次 = POR + PIN             -> 断电式复位（既掉电又过复位脚）
- *   闪 5 次 = 其它
- * 每次开机闪 3 遍（每遍之间停 1.2s），测完请改回 0。 */
-#define BOOT_RESET_CAUSE_BLINK  1
-/* 诊断开关：当前无法驱动时，用"快速档"LED(PA12) 闪码表示原因（详见 led.h / 文档）：
- *   ＜不闪＞ = 正常可驱动     1 闪 = 未 armed（摇杆没回中/数据被拒）
- *   2 闪 = 手柄掉出模拟模式（绿灯）   3 闪 = 失联保护（中位且数据 10s 不变，或任意状态 60s 不变）
- *   4 闪 = 完全读不到手柄（通信失败）
- * 每 2 秒一轮。正常行驶时不闪；想关掉就把下面改成 0。 */
-#define LED_DIAG_BLINK          1
+ *   闪 5 次 = 其它（未知组合）
+ *   闪 6 次 = IWDGRSTF 独立看门狗   -> **程序卡死超过 1 秒**（软件问题，不是供电！）
+ *   闪 7 次 = WWDG 窗口看门狗
+ * 每次开机闪 BOOT_RESET_CAUSE_BLINK_ROUNDS 遍，每遍之间停 BOOT_RESET_CAUSE_BLINK_GAP_MS 毫秒；
+ * ⭐ 目前为 0（已关闭）：正常使用时不闪灯、上电不额外等待。
+ *    以后要排查复位原因时改成 1 即可（g_reset_cause 的锁存逻辑一直保留，调试器仍可 Watch）。 */
+#define BOOT_RESET_CAUSE_BLINK  0
+/* 开机闪码重复遍数（3 轮，方便数清楚） */
+#define BOOT_RESET_CAUSE_BLINK_ROUNDS  3
+/* 每轮之间的间隔（ms）：1.5 秒，足够分清"一组闪完"和"下一组开始" */
+#define BOOT_RESET_CAUSE_BLINK_GAP_MS  1500
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -128,19 +130,24 @@ int main(void)
       /* 用闪码显示上次复位原因（见 USER CODE PD 的说明） */
       uint8_t code;
 
-      if (g_reset_cause & 0x08000000u)                                   /* POR 置位 */
+      if (g_reset_cause & 0x08000000u)                                   /* POR 置位（掉电/欠压） */
           code = (g_reset_cause & 0x04000000u) ? 4u : 2u;
-      else if (g_reset_cause & 0x04000000u)                              /* 只有 PIN */
+      else if (g_reset_cause & 0x04000000u)                              /* PIN：NRST 被拉低 */
           code = (g_reset_cause & 0x10000000u) ? 3u : 1u;
-      else if (g_reset_cause & 0x10000000u)                              /* 只有 SFT */
+      else if (g_reset_cause & 0x10000000u)                              /* SFT：软件复位 */
           code = 3u;
+      else if (g_reset_cause & 0x20000000u)                              /* IWDG：看门狗（程序卡死！） */
+          code = 6u;
+      else if (g_reset_cause & 0x40000000u)                              /* WWDG */
+          code = 7u;
       else
-          code = 5u;
+          code = 5u;                                                     /* 未知/其它 */
 
-      for (uint8_t r = 0; r < 3; r++)
+      for (uint8_t r = 0; r < BOOT_RESET_CAUSE_BLINK_ROUNDS; r++)
       {
           LED_BlinkCode(code);
-          HAL_Delay(1200);
+          if ((uint8_t)(r + 1u) < BOOT_RESET_CAUSE_BLINK_ROUNDS)
+              HAL_Delay(BOOT_RESET_CAUSE_BLINK_GAP_MS);   // 轮间隔（最后一轮不再等）
       }
   }
 #endif
@@ -175,7 +182,7 @@ int main(void)
           /* 红灯(模拟)模式：舵机 + 底盘 */
           uint8_t enabled = RC_Feed(&ps2);          // 失联保护/安全启动
 
-          Servo_Task(ps2.buttons);
+          Servo_Task(&ps2);                         // 四路机械臂：MG995 看右摇杆Y，其余看按键
 
           if (Ctrl_Update(&ps2, enabled, &cmd))
           {
@@ -194,29 +201,17 @@ int main(void)
           }
 
           LED_SetGear(cmd.gear);                    // 档位指示
-
-#if LED_DIAG_BLINK
-          /* 不能驱动时用"闪码"告诉操作手原因（详见 led.h）：
-           * 1 闪=未 armed  2 闪=数字模式  3 闪=失联保护(数据10s没变)  4 闪=读不到手柄  不闪=正常 */
-          if (enabled)
-            LED_DiagCode(0u);
-          else
-            LED_DiagCode(g_rc_dbg.armed ? 3u : 1u);
-#endif
         }
         else
         {
           /* 掉出模拟模式（绿灯）：驱动会自动重发配置把它拉回红灯模式；
              这里停车并强制重新安全启动，避免拉回瞬间窜车 */
-          Servo_Task(ps2.buttons);
+          Servo_Task(&ps2);
           Motor_StopAll();
           RC_ForceReArm();
 
           (void)Ctrl_Update(&ps2, 0, &cmd);         // 仅为刷新档位显示
           LED_SetGear(cmd.gear);
-#if LED_DIAG_BLINK
-          LED_DiagCode(2u);                         // 2 闪 = 手柄处于数字(绿灯)模式
-#endif
         }
       }
       else
@@ -224,9 +219,6 @@ int main(void)
         /* 通信失败：停车并强制重新安全启动 */
         Motor_StopAll();
         RC_ForceReArm();
-#if LED_DIAG_BLINK
-        LED_DiagCode(4u);                          // 4 闪 = 完全读不到手柄
-#endif
       }
     }
     /* USER CODE END WHILE */

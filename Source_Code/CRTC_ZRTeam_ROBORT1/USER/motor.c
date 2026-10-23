@@ -19,9 +19,6 @@
 #define MOTOR_SIGN_RF  (+1)
 #define MOTOR_SIGN_RR  (+1)
 
-// ===== 软启动（防启动浪涌 / 降低电机线 dV/dt 干扰）=====
-// 开关与步长宏定义在 motor.h（MOTOR_SLEW_ENABLE / MOTOR_SLEW_STEP），此处直接用。
-
 typedef struct {
     TIM_HandleTypeDef *htim_pwm;   // PWM引脚所在定时器
     uint32_t pwm_channel;          // PWM通道
@@ -141,22 +138,15 @@ void Motor_BrakeAll(void)
 // out[4]: 依次为 LF / LR / RF / RR 的占空比（-1000~1000）
 static void mecanum_compute(int16_t vx, int16_t vy, int16_t vw, int16_t limit, int16_t out[4])
 {
-    int16_t speed_lf, speed_lr, speed_rf, speed_rr;
-
     if (limit <= 0)    limit = 1;
     if (limit > 1000)  limit = 1000;
 
     // 逆运动学解算
     // 注意：vx 的系数必须四个轮子全为 +1，否则"前进"会变成对角差速（原地打转/斜移）
-    speed_lf =  vx + vy + vw;   // 左前
-    speed_rf =  vx - vy - vw;   // 右前
-    speed_lr =  vx - vy + vw;   // 左后
-    speed_rr =  vx + vy - vw;   // 右后
-
-    out[0] = speed_lf;
-    out[1] = speed_lr;
-    out[2] = speed_rf;
-    out[3] = speed_rr;
+    out[0] =  vx + vy + vw;   // 左前 LF
+    out[1] =  vx - vy + vw;   // 左后 LR
+    out[2] =  vx - vy - vw;   // 右前 RF
+    out[3] =  vx + vy - vw;   // 右后 RR
 
     // 饱和处理：任一轴超程时按最大绝对值等比缩小，保证运动方向不变
     // （逐轮单独限幅会改变四轮比例，导致斜移/旋转时方向畸变）
@@ -182,7 +172,6 @@ static void mecanum_apply(int16_t vx, int16_t vy, int16_t vw, int16_t limit)
 
     mecanum_compute(vx, vy, vw, limit, vals);
 
-    // 设置四个电机
     Motor_SetPWM(MOTOR_LF, vals[0]);
     Motor_SetPWM(MOTOR_LR, vals[1]);
     Motor_SetPWM(MOTOR_RF, vals[2]);
@@ -194,16 +183,10 @@ void Mecanum_Move(int16_t vx, int16_t vy, int16_t vw)
     mecanum_apply(vx, vy, vw, 1000);
 }
 
-// 带输出上限的版本：用于"档位"限幅（四轮等比缩放到 limit 以内）
-void Mecanum_MoveLimit(int16_t vx, int16_t vy, int16_t vw, int16_t limit)
-{
-    mecanum_apply(vx, vy, vw, limit);
-}
-
 /* ===== 软启动：限制每个轮子每 10ms 的占空比变化量 =====
- * 目的：指令跳变（比如推杆从 0 直接到 60%）时，不让四个电机同时瞬变，
- *       把启动浪涌电流和电机线上的 dV/dt（电磁干扰源）大幅削掉。
- * 主循环 10ms 调一次，所以"每 tick 60"= 满量程约 170ms 爬到位。 */
+ * 目的：指令跳变（推杆 0 -> 60%）时不让四个电机同时瞬变，
+ *       削掉启动浪涌电流和电机线上的 dV/dt（电磁干扰源）。
+ * 主循环 10ms 调一次，"每 tick 60" = 满量程约 170ms 爬到位。 */
 #if MOTOR_SLEW_ENABLE
 static int16_t s_slew_state[4] = {0, 0, 0, 0};
 
@@ -239,6 +222,12 @@ void Mecanum_MoveLimitSlew(int16_t vx, int16_t vy, int16_t vw, int16_t limit)
     Motor_SetPWM(MOTOR_RR, vals[3]);
 }
 #endif  /* MOTOR_SLEW_ENABLE */
+
+// 带输出上限的版本：用于"档位"限幅（四轮等比缩放到 limit 以内）
+void Mecanum_MoveLimit(int16_t vx, int16_t vy, int16_t vw, int16_t limit)
+{
+    mecanum_apply(vx, vy, vw, limit);
+}
 
 // ===== 四轮接线自检（由 MOTOR_SELFTEST_ENABLE 控制）=====
 #if MOTOR_SELFTEST_ENABLE

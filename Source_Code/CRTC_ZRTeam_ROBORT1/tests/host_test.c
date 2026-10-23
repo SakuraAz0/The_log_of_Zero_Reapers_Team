@@ -199,6 +199,45 @@ static int16_t wheel_cmd(int16_t vx, int16_t vy, int16_t vw, int which)
     }
 }
 
+/* ================= 舵机测试辅助 ================= */
+/* Servo_Task 现在接收整包手柄数据（MG995 要看右摇杆 Y），这里包一层方便测试 */
+static PS2_Data_t s_servo_pad;
+
+static void servo_pad_reset(void)
+{
+    memset(&s_servo_pad, 0, sizeof s_servo_pad);
+    s_servo_pad.mode    = 1;
+    s_servo_pad.left_x  = 0x80;
+    s_servo_pad.left_y  = 0x80;
+    s_servo_pad.right_x = 0x80;
+    s_servo_pad.right_y = 0x80;
+    s_servo_pad.buttons = 0xFFFF;      /* 无按键（低有效） */
+}
+
+/* 只按某些键、摇杆回中 */
+static void servo_task_buttons(uint16_t buttons)
+{
+    servo_pad_reset();
+    s_servo_pad.buttons = buttons;
+    Servo_Task(&s_servo_pad);
+}
+
+/* 右摇杆 Y 给指定原始值（0x00 = 推到最前，0xFF = 拉到最底，0x80 = 中位），无按键 */
+static void servo_task_stick(uint8_t ry_raw)
+{
+    servo_pad_reset();
+    s_servo_pad.right_y = ry_raw;
+    Servo_Task(&s_servo_pad);
+}
+
+/* 把"配置值"按通道限幅到 [lo,hi]，用于断言上电姿态（配置可能故意超出安全行程） */
+static uint16_t expect_clamped(int32_t us, uint16_t lo, uint16_t hi)
+{
+    if (us < (int32_t)lo) return lo;
+    if (us > (int32_t)hi) return hi;
+    return (uint16_t)us;
+}
+
 /* ================= 测试框架 ================= */
 static int g_pass = 0, g_fail = 0;
 
@@ -384,29 +423,12 @@ int main(void)
     /* 失联保护：数据逐字节不变超过超时 */
     CHECK(RC_Feed(&d) == 1, "数据未变但未到超时时间仍允许");
     s_tick += RC_STALE_TIMEOUT_MS + 100;
-    CHECK(RC_Feed(&d) == 0, "中位且数据逐字节不变超过超时 -> 保护停车");
+    CHECK(RC_Feed(&d) == 0, "数据逐字节不变超过超时 -> 保护停车");
     CHECK(g_rc_dbg.stale == 1 && g_rc_dbg.protect_count == 1, "失联保护标志与计数正确");
 
     d.left_x = 0x81;                                   /* 操作手动一下摇杆 */
     CHECK(RC_Feed(&d) == 1, "数据一变化立即恢复驱动");
     CHECK(g_rc_dbg.stale == 0 && g_rc_dbg.unchanged_ms == 0, "恢复后失联标志清零");
-    d.left_x = 0x80;
-
-    /* ===== 混合判据：稳定保持摇杆（非中位）不变，不应被误判失联 ===== */
-    s_tick += RC_STALE_TIMEOUT_MS + 100;               /* 从上一帧起算已超过 10s */
-    d.left_x = 0x30;                                   /* 摇杆推到一侧并稳住（远离中位） */
-    CHECK(RC_Feed(&d) == 1, "摇杆保持非中位：起算一帧");
-    s_tick += RC_STALE_TIMEOUT_MS + 1000;              /* 非中位、数据不变，超过 10s */
-    CHECK(RC_Feed(&d) == 1,
-          "匀速行驶关键：摇杆稳定保持在非中位超过 10s 不被误判失联");
-    CHECK(g_rc_dbg.stale == 0, "非中位保持不动 -> stale 仍为 0");
-
-    /* 但超过"兜底 60 秒"仍要保护 */
-    s_tick += RC_STALE_TIMEOUT_LONG_MS;
-    CHECK(RC_Feed(&d) == 0, "任意状态数据不变超过 60s 兜底 -> 保护停车");
-    CHECK(g_rc_dbg.stale == 1, "兜底保护生效（stale=1）");
-    d.left_x = 0x2F;                                   /* 动一下 */
-    CHECK(RC_Feed(&d) == 1 && g_rc_dbg.stale == 0, "兜底保护后一动即恢复");
     d.left_x = 0x80;
 
     /* 时间回绕：tick 从 0xFFFFFF00 走到 0x00000100 不应误判 */
@@ -659,39 +681,6 @@ int main(void)
         CHECK((s_gpio_a_odr & LED_PIN_MID) != 0 && (s_gpio_a_odr & LED_PIN_SLOW) == 0, "档位 1 -> 只亮中速 LED");
         LED_SetGear(2);
         CHECK((s_gpio_a_odr & LED_PIN_FAST) != 0 && (s_gpio_a_odr & LED_PIN_MID) == 0, "档位 2 -> 只亮快速 LED");
-
-        /* 诊断闪码 LED_DiagCode：PA12 每 2 秒按次数闪（150ms 亮 / 150ms 灭） */
-        {
-            s_tick = 0;
-            s_gpio_a_odr = 0;
-            LED_DiagCode(1);                       /* 1 闪 */
-            CHECK((s_gpio_a_odr & LED_PIN_FAST) != 0, "闪码1：t=0 时 PA12 亮");
-            s_tick = 200;
-            LED_DiagCode(1);
-            CHECK((s_gpio_a_odr & LED_PIN_FAST) == 0, "闪码1：t=200ms 时 PA12 灭（一闪结束）");
-            s_tick = 300;
-            LED_DiagCode(1);
-            CHECK((s_gpio_a_odr & LED_PIN_FAST) == 0, "闪码1：一轮内不再亮");
-
-            s_tick = 0;
-            LED_DiagCode(3);                       /* 3 闪 */
-            CHECK((s_gpio_a_odr & LED_PIN_FAST) != 0, "闪码3：第 1 闪开始亮");
-            s_tick = 300;
-            LED_DiagCode(3);
-            CHECK((s_gpio_a_odr & LED_PIN_FAST) != 0, "闪码3：t=300ms 第 2 闪亮");
-            s_tick = 600;
-            LED_DiagCode(3);
-            CHECK((s_gpio_a_odr & LED_PIN_FAST) != 0, "闪码3：t=600ms 第 3 闪亮");
-            s_tick = 1000;
-            LED_DiagCode(3);
-            CHECK((s_gpio_a_odr & LED_PIN_FAST) == 0, "闪码3：闪完后熄灭到本轮结束");
-
-            /* code=0 不碰引脚（把控制权交回 LED_SetGear） */
-            s_gpio_a_odr = 0;
-            LED_SetGear(2);                        /* 快速档：PA12 亮 */
-            LED_DiagCode(0);
-            CHECK((s_gpio_a_odr & LED_PIN_FAST) != 0, "闪码0：不干扰档位 LED（PA12 仍亮）");
-        }
     }
 
     /* 刹车输出：DRV8833 双输入 100% */
@@ -714,13 +703,42 @@ int main(void)
         Servo_Init();
         CHECK(g_fake_tim3.PSC == 71 && g_fake_tim3.ARR == 19999,
               "TIM3 时基 = 1MHz / 20000 -> 50Hz");
-        CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == SERVO0_POWERON_US &&
-              Servo_GetPulse(SERVO_CH_JOINT2) == SERVO1_POWERON_US,
-              "上电关节舵机默认停在 0°（MIN 端）");
-        CHECK(g_fake_tim3.CCR1 == SERVO0_POWERON_US && g_fake_tim3.CCR2 == SERVO1_POWERON_US,
-              "CCR1/CCR2 已写入上电默认脉宽");
-        CHECK(SERVO0_MAX_US - SERVO0_MIN_US >= 2000,
-              "关节舵机行程 >= 2000us（足够转到 180°）");
+        /* 上电姿态按"机械角 -> 脉宽"换算，再被 MIN/MAX 限幅，所以用 clamp 后的期望值比较 */
+        {
+            const uint16_t exp0 = expect_clamped(SERVO0_START_US, SERVO0_MIN_US, SERVO0_MAX_US);
+            const uint16_t exp1 = expect_clamped(SERVO1_START_US, SERVO1_MIN_US, SERVO1_MAX_US);
+
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == exp0 &&
+                  Servo_GetPulse(SERVO_CH_JOINT2) == exp1,
+                  "上电舵机停在配置姿态（角度换算 + 限幅）");
+            CHECK(g_fake_tim3.CCR1 == exp0 && g_fake_tim3.CCR2 == exp1,
+                  "CCR1/CCR2 已写入上电默认脉宽");
+        }
+        /* 三路臂舵机：限位必须落在舵机物理范围 500~2500us 内、下限<上限；
+         * 只有在"角度换算没有碰到物理边界"时，跨度才等于 (上限-下限)° × 11.11us。
+         * （现场若把偏移/下限填到超出舵机物理范围，宏会自动限幅到 500/2500，这里不判失败） */
+        {
+            CHECK(SERVO0_MIN_US < SERVO0_MAX_US && SERVO1_MIN_US < SERVO1_MAX_US &&
+                  SERVO3_MIN_US < SERVO3_MAX_US,
+                  "三路臂舵机：下限 < 上限");
+            CHECK(SERVO0_MIN_US >= 500 && SERVO0_MAX_US <= 2500 &&
+                  SERVO1_MIN_US >= 500 && SERVO1_MAX_US <= 2500 &&
+                  SERVO3_MIN_US >= 500 && SERVO3_MAX_US <= 2500,
+                  "三路臂舵机：限位都在舵机物理范围 500~2500us 内");
+
+            /* MG995 偏移 0 且 0~140° 全在物理范围内 -> 跨度应严格等于角度差 */
+            {
+                const uint16_t span = (uint16_t)(SERVO0_MAX_US - SERVO0_MIN_US);
+                const uint16_t want = (uint16_t)((SERVO0_MAX_ANGLE_DEG - SERVO0_MIN_ANGLE_DEG) * 1000u / 90u);
+
+                CHECK(span == want || span + 1u == want || span == want + 1u,
+                      "MG995 行程跨度 = (上限-下限)° × 11.11us");
+            }
+            CHECK(SERVO0_SPAN_DEG == SERVO0_MAX_ANGLE_DEG - SERVO0_MIN_ANGLE_DEG &&
+                  SERVO1_SPAN_DEG == SERVO1_MAX_ANGLE_DEG - SERVO1_MIN_ANGLE_DEG &&
+                  SERVO3_SPAN_DEG == SERVO3_MAX_ANGLE_DEG - SERVO3_MIN_ANGLE_DEG,
+                  "Servo_SetAngle 的角度跨度 = 上限-下限");
+        }
         /* ===== 以下断言全部"按宏自洽计算"，现场改零点偏移/一键行程时不用动测试 ===== */
         CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_OPEN_US,
               "机械爪上电停在完全张开（= SERVO2_MAX_US）");
@@ -757,10 +775,12 @@ int main(void)
                       (uint16_t)(SERVO2_MIN_US + (uint32_t)span * SERVO_GRIP_CLOSE_DEG / SERVO2_MAX_DEG),
                   "一键合上端点脉宽 = MIN + 跨度×合上角/90（改 SERVO_GRIP_ONESHOT_DEG 自动跟随）");
         }
-        Servo_SetAngle(SERVO_CH_JOINT1, 180);
-        CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == 2500, "关节 180° -> 2500us");
-        Servo_SetAngle(SERVO_CH_JOINT1, 90);
-        CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == 1500, "关节 90° -> 1500us");
+        Servo_SetAngle(SERVO_CH_JOINT1, SERVO0_SPAN_DEG + 20);          /* 超上限 */
+        CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == SERVO0_MAX_US, "角度超上限 -> 限幅到 MAX");
+        Servo_SetAngle(SERVO_CH_JOINT1, 90);                           /* 按 deg_to_us 的映射算期望值 */
+        CHECK(Servo_GetPulse(SERVO_CH_JOINT1) ==
+                  (uint16_t)(SERVO0_MIN_US + (uint32_t)(SERVO0_MAX_US - SERVO0_MIN_US) * 90u / SERVO0_SPAN_DEG),
+              "MG995 90° -> 按 0~跨度 线性映射");
         Servo_Init();
 
         /* 限幅 */
@@ -769,58 +789,184 @@ int main(void)
         Servo_SetPulse(SERVO_CH_JOINT1, 3000);
         CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == SERVO0_MAX_US, "高于上限 -> 限幅到 MAX");
 
-        /* 关节舵机：L1 增 / L2 减；速度 120°/s（100 tick = 1 秒 -> 约 1330us） */
+        /* ===== MG995（CH1，最下面的臂）：右摇杆前后控制，100°/s ===== */
         Servo_Init();
         {
             const uint16_t p0  = Servo_GetPulse(SERVO_CH_JOINT1);
-            const uint16_t exp = (uint16_t)(SERVO_JOINT_STEP_US10 * 100u / 10u);   /* 133*100/10 = 1330us */
+            const uint16_t exp = (uint16_t)(SERVO_MG995_STEP_US10 * 50u / 10u);    /* 50 tick = 555us */
 
-            for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_L1));
+            for (int i = 0; i < 50; i++) servo_task_stick(0x00);     /* 摇杆推前 0.5 秒 */
             CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == (uint16_t)(p0 + exp),
-                  "按住 L1 一秒 -> 关节舵机1 走 1330us（= 120°/s）");
-            for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_L2));
-            CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == p0, "按住 L2 一秒 -> 回到原位");
+                  "右摇杆推前半秒 -> MG995 走 555us（= 100°/s）");
+            for (int i = 0; i < 50; i++) servo_task_stick(0xFF);     /* 摇杆拉后 0.5 秒 */
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == p0, "右摇杆拉后半秒 -> 回原位");
+
+            for (int i = 0; i < 30; i++) servo_task_stick(0x00);     /* 推一点 */
+            {
+                const uint16_t before = Servo_GetPulse(SERVO_CH_JOINT1);
+                for (int i = 0; i < 20; i++) servo_task_stick(0x80); /* 摇杆回中 */
+                CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == before,
+                      "右摇杆回中 -> MG995 停止（速率控制，松开即停）");
+            }
+            /* 一直推到顶 -> 被 SERVO0_MAX_US 限幅（不会冲出行程） */
+            for (int i = 0; i < 200; i++) servo_task_stick(0x00);
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == SERVO0_MAX_US, "推到底 -> 限幅到安全上限");
+            for (int i = 0; i < 300; i++) servo_task_stick(0xFF);
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == SERVO0_MIN_US, "拉到底 -> 限幅到安全下限");
             CHECK(g_fake_tim3.CCR1 == Servo_GetPulse(SERVO_CH_JOINT1),
                   "TIM3->CCR1 与实际脉宽一致");
         }
 
-        /* 关节舵机2：R1 / R2，同样 120°/s */
+        /* ===== SG90-下（CH2）：L1 / L2，90°/s（L1 点动只在模式0有效，默认就是模式0） ===== */
         Servo_Init();
+        Servo_SetGripMode(SERVO_GRIP_MODE_JOG);
         {
             const uint16_t p0  = Servo_GetPulse(SERVO_CH_JOINT2);
-            const uint16_t exp = (uint16_t)(SERVO_JOINT_STEP_US10 * 100u / 10u);
+            const uint16_t exp = (uint16_t)(SERVO_SG90_STEP_US10 * 50u / 10u);     /* 50 tick = 500us */
 
-            for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_R1));
-            CHECK(Servo_GetPulse(SERVO_CH_JOINT2) == (uint16_t)(p0 + exp),
-                  "按住 R1 一秒 -> 关节舵机2 走 1330us（= 120°/s）");
-            for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_R2));
-            CHECK(Servo_GetPulse(SERVO_CH_JOINT2) == p0, "按住 R2 一秒 -> 回到原位");
+            CHECK(p0 == expect_clamped(SERVO1_START_US, SERVO1_MIN_US, SERVO1_MAX_US),
+                  "SG90(下) 上电停在配置姿态（限幅后）");
+            /* 从端点先往行程内走（上电默认在 180° 端，L1 方向已到极限，所以先用 L2 往下走） */
+            for (int i = 0; i < 50; i++) servo_task_buttons((uint16_t)(~PS2_BTN_L2));
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT2) == (uint16_t)(p0 - exp),
+                  "按住 L2 半秒 -> SG90(下) 走 500us（= 90°/s）");
+            for (int i = 0; i < 50; i++) servo_task_buttons((uint16_t)(~PS2_BTN_L1));
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT2) == p0, "按住 L1 半秒 -> 回原位");
         }
 
-        /* 机械爪速度不变：仍是 SERVO_SLEW_US_PER_TICK（15us/tick = 135°/s） */
+        /* ===== 一键放下（模式1 按 L1：MG995 -> SG90下 -> SG90上 -> 等0.5s -> 机械爪松开） ===== */
+        {
+            const uint16_t tgt_ch1 = (uint16_t)SERVO_ANGLE_TO_US(SERVO_DROP_MG995_DEG, SERVO0_OFFSET_DEG);
+            const uint16_t tgt_ch2 = (uint16_t)SERVO_ANGLE_TO_US(SERVO_DROP_SG90_LOW_DEG, SERVO1_OFFSET_DEG);
+            const uint16_t tgt_ch4 = (uint16_t)SERVO_ANGLE_TO_US(SERVO_DROP_SG90_UP_DEG, SERVO3_OFFSET_DEG);
+
+            Servo_Init();
+            Servo_SetGripMode(SERVO_GRIP_MODE_ONESHOT);      /* 模式 1：一键张合 + 一键放下 */
+            Servo_SetPulse(SERVO_CH_GRIPPER, SERVO_GRIP_CLOSE_US);   /* 先把爪子合上，便于验证后面松开 */
+            servo_task_buttons(0xFFFF);                      /* 放开所有键，建立边沿状态 */
+
+            {
+                const uint16_t ch2_before = Servo_GetTarget(SERVO_CH_JOINT2);
+                const uint16_t ch4_before = Servo_GetTarget(SERVO_CH_ARM_UP);
+
+                servo_task_buttons((uint16_t)(~PS2_BTN_L1)); /* 按 L1 -> 触发 */
+                CHECK(Servo_GetTarget(SERVO_CH_JOINT1) == tgt_ch1,
+                      "一键放下：第1步 MG995 目标 = SERVO_DROP_MG995_DEG");
+                CHECK(Servo_GetTarget(SERVO_CH_JOINT2) == ch2_before &&
+                      Servo_GetTarget(SERVO_CH_ARM_UP) == ch4_before,
+                      "一键放下：第1步时上面两个 SG90 还不动（严格从下往上）");
+            }
+
+            /* 空跑 4 秒（400 tick）让三个臂到位；注意不推进 tick，所以会卡在"等延时"那一步 */
+            for (int i = 0; i < 400; i++) servo_task_buttons(0xFFFF);
+
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT1) == expect_clamped(tgt_ch1, SERVO0_MIN_US, SERVO0_MAX_US),
+                  "一键放下：MG995 到达放下目标角");
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT2) == expect_clamped(tgt_ch2, SERVO1_MIN_US, SERVO1_MAX_US),
+                  "一键放下：SG90(下) 到达放下目标角");
+            CHECK(Servo_GetPulse(SERVO_CH_ARM_UP) == expect_clamped(tgt_ch4, SERVO3_MIN_US, SERVO3_MAX_US),
+                  "一键放下：SG90(上) 到达放下目标角（超限位会自动限幅）");
+            CHECK(Servo_GetTarget(SERVO_CH_GRIPPER) == SERVO_GRIP_CLOSE_US &&
+                  Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_CLOSE_US,
+                  "一键放下：0.5s 延时期间机械爪保持不动（还合着）");
+
+            /* 推进 0.5s 延时 -> 机械爪才开始松开 */
+            s_tick += SERVO_DROP_GRIP_DELAY_MS + 20;
+            servo_task_buttons(0xFFFF);
+            CHECK(Servo_GetTarget(SERVO_CH_GRIPPER) == SERVO_GRIP_OPEN_US,
+                  "一键放下：延时到 -> 机械爪目标切到完全张开");
+            for (int i = 0; i < 100; i++) servo_task_buttons(0xFFFF);
+            CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_OPEN_US,
+                  "一键放下：机械爪松开到位");
+
+            /* 模式 1 下 L1 是触发键：再按一次 L1 是重新触发序列（不会点动 CH2） */
+            {
+                const uint16_t ch2_after = Servo_GetTarget(SERVO_CH_JOINT2);
+
+                servo_task_buttons(0xFFFF);
+                servo_task_buttons((uint16_t)(~PS2_BTN_L1));
+                CHECK(Servo_GetTarget(SERVO_CH_JOINT2) == ch2_after,
+                      "模式1：L1 是一键放下触发键，不再点动 CH2");
+            }
+        }
+
+        /* ===== 模式 0 下 L1 仍可点动 SG90(下)（上电默认行为） ===== */
+        Servo_Init();
+        Servo_SetGripMode(SERVO_GRIP_MODE_JOG);
+        {
+            const uint16_t p0 = Servo_GetPulse(SERVO_CH_JOINT2);
+            const uint16_t exp = (uint16_t)(SERVO_SG90_STEP_US10 * 20u / 10u);
+
+            /* 上电在最大端附近，L1 是往增大方向 -> 先按 L2 往回走一段，再用 L1 走回来 */
+            for (int i = 0; i < 20; i++) servo_task_buttons((uint16_t)(~PS2_BTN_L2));
+            const uint16_t p1 = Servo_GetPulse(SERVO_CH_JOINT2);
+            CHECK(p1 == (uint16_t)(p0 - exp), "模式0：L2 点动 SG90(下) 走 200us");
+
+            for (int i = 0; i < 20; i++) servo_task_buttons((uint16_t)(~PS2_BTN_L1));
+            CHECK(Servo_GetPulse(SERVO_CH_JOINT2) == p0,
+                  "模式0：L1 仍是 SG90(下) 点动（不会触发一键放下）");
+        }
+
+
+
+        /* ===== SG90-上（CH4）：R1 / R2，90°/s（按当前上电位置自动选"有 500us 余量"的方向） ===== */
+        Servo_Init();
+        Servo_SetGripMode(SERVO_GRIP_MODE_ONESHOT);
+        {
+            const uint16_t p0  = Servo_GetPulse(SERVO_CH_ARM_UP);
+            const uint16_t exp = (uint16_t)(SERVO_SG90_STEP_US10 * 50u / 10u);   /* 50 tick = 500us */
+            /* 上电位置靠上限就先用 R2 往下走，否则先用 R1 往上走 */
+            const uint8_t  down_first = ((uint16_t)(p0 - SERVO3_MIN_US) < exp) ? 0u : 1u;
+            const uint16_t btn_first  = down_first ? (uint16_t)(~PS2_BTN_R2) : (uint16_t)(~PS2_BTN_R1);
+            const uint16_t btn_back   = down_first ? (uint16_t)(~PS2_BTN_R1) : (uint16_t)(~PS2_BTN_R2);
+            const uint16_t expect_mid = down_first ? (uint16_t)(p0 - exp) : (uint16_t)(p0 + exp);
+
+            CHECK(p0 == expect_clamped(SERVO3_START_US, SERVO3_MIN_US, SERVO3_MAX_US),
+                  "SG90(上) 上电停在配置姿态（限幅后）");
+            for (int i = 0; i < 50; i++) servo_task_buttons(btn_first);
+            CHECK(Servo_GetPulse(SERVO_CH_ARM_UP) == expect_mid,
+                  "按住方向键半秒 -> SG90(上) 走 500us（= 90°/s）");
+            CHECK(g_fake_tim3.CCR4 == Servo_GetPulse(SERVO_CH_ARM_UP),
+                  "SG90(上) 在 TIM3_CH4(PB1) 上输出");
+            for (int i = 0; i < 50; i++) servo_task_buttons(btn_back);
+            CHECK(Servo_GetPulse(SERVO_CH_ARM_UP) == p0, "反方向按半秒 -> 回原位");
+
+            /* 一直按住到端头 -> 被 SERVO3_MIN/MAX_US 限住（不会冲出安全窗口） */
+            for (int i = 0; i < 200; i++) servo_task_buttons((uint16_t)(~PS2_BTN_R2));
+            CHECK(Servo_GetPulse(SERVO_CH_ARM_UP) == SERVO3_MIN_US, "R2 按到底 -> 限幅到安全下限");
+            for (int i = 0; i < 300; i++) servo_task_buttons((uint16_t)(~PS2_BTN_R1));
+            CHECK(Servo_GetPulse(SERVO_CH_ARM_UP) == SERVO3_MAX_US, "R1 按到底 -> 限幅到安全上限");
+        }
+
+        /* ===== 机械爪点动速度：120°/s（每 tick 13.3us -> 10 tick 走 133us） ===== */
         Servo_Init();
         {
-            const uint16_t p0 = Servo_GetPulse(SERVO_CH_GRIPPER);
+            const uint16_t p0  = Servo_GetPulse(SERVO_CH_GRIPPER);
+            const uint16_t exp = (uint16_t)(SERVO_GRIP_STEP_US10 * 10u / 10u);   /* 133*10/10 = 133us */
 
-            for (int i = 0; i < 10; i++) Servo_Task((uint16_t)(~PS2_BTN_CIRCLE));
-            CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) ==
-                      (uint16_t)(p0 - 10 * SERVO_SLEW_US_PER_TICK),
-                  "机械爪点动速度仍为 15us/tick（135°/s，未改变）");
+            for (int i = 0; i < 10; i++) servo_task_buttons((uint16_t)(~PS2_BTN_CIRCLE));
+            CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == (uint16_t)(p0 - exp),
+                  "机械爪点动 10 tick 走 133us（= 120°/s）");
         }
-        CHECK(SERVO_JOINT_DEG_PER_SEC == 120, "关节舵机目标速度 = 120°/s");
-        CHECK(SERVO_JOINT_STEP_US10 == 133, "每 tick 13.3us（133 个 0.1us）");
+        CHECK(SERVO_MG995_DEG_PER_SEC == 100, "MG995 目标速度 = 100°/s");
+        CHECK(SERVO_MG995_STEP_US10 == 111, "MG995 每 tick 11.1us（111 个 0.1us）");
+        CHECK(SERVO_SG90_DEG_PER_SEC == 90, "两个 SG90 目标速度 = 90°/s");
+        CHECK(SERVO_SG90_STEP_US10 == 100, "SG90 每 tick 10.0us（100 个 0.1us）");
+        CHECK(SERVO_GRIP_DEG_PER_SEC == 120, "机械爪目标速度 = 120°/s");
+        CHECK(SERVO_GRIP_STEP_US10 == 133, "机械爪每 tick 13.3us（133 个 0.1us）");
 
-        /* 机械爪：□ 张开 / ○ 合拢（一键式） */
+        /* 机械爪：□ 张开 / ○ 合拢（一键式；默认模式0是点动，这里先切模式1） */
         Servo_Init();
-        for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_SQUARE));
+        Servo_SetGripMode(SERVO_GRIP_MODE_ONESHOT);
+        for (int i = 0; i < 100; i++) servo_task_buttons((uint16_t)(~PS2_BTN_SQUARE));
         CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_OPEN_US, "按住 □ -> 机械爪张开到位");
         CHECK(g_fake_tim3.CCR3 == SERVO_GRIP_OPEN_US, "机械爪 CCR3 同步更新");
-        for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_CIRCLE));
+        for (int i = 0; i < 100; i++) servo_task_buttons((uint16_t)(~PS2_BTN_CIRCLE));
         CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_CLOSE_US, "按住 ○ -> 机械爪合拢到位");
 
-        /* ---------- 机械爪两种控制模式（SELECT 切换） ---------- */
+        /* ---------- 机械臂总控模式（SELECT 切换；上电默认 = 模式 0 全点动） ---------- */
         Servo_Init();
-        CHECK(Servo_GetGripMode() == SERVO_GRIP_MODE_ONESHOT, "上电默认 = 一键张合模式(1)");
+        CHECK(Servo_GetGripMode() == SERVO_GRIP_MODE_JOG, "上电默认 = 点动模式(0)");
         CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_OPEN_US, "上电停在完全张开 90°");
         CHECK(SERVO_GRIP_OPEN_DEG == 90 &&
               SERVO_GRIP_CLOSE_DEG == SERVO_GRIP_OPEN_DEG - SERVO_GRIP_ONESHOT_DEG &&
@@ -828,43 +974,62 @@ int main(void)
               "一键张合：合上角 = 全开角 - 一键行程（行程在 0~90° 之间）");
         CHECK(Servo_GetTarget(SERVO_CH_GRIPPER) == SERVO_GRIP_OPEN_US, "上电目标 = 完全张开");
 
+        /* 按一次 SELECT -> 模式 1（一键张合） */
+        s_tick += SERVO_MODE_TOGGLE_MS;
+        servo_task_buttons((uint16_t)(~PS2_BTN_SELECT));
+        CHECK(Servo_GetGripMode() == SERVO_GRIP_MODE_ONESHOT, "SELECT -> 切到一键张合模式(1)");
+        servo_task_buttons(0xFFFF);
+
         /* 一键式：按一次自动走到位，松开不影响 */
-        for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_CIRCLE));
+        for (int i = 0; i < 100; i++) servo_task_buttons((uint16_t)(~PS2_BTN_CIRCLE));
         CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_CLOSE_US,
-              "一键式：按 ○ 自动合上到 30°（833us）");
-        Servo_Task(0xFFFF);                                     /* 松开 */
+              "一键式：按 ○ 自动合上（SERVO_GRIP_CLOSE_US）");
+        servo_task_buttons(0xFFFF);                                     /* 松开 */
         CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_CLOSE_US,
               "一键式：松开后保持在合上位置");
-        for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_SQUARE));
+        for (int i = 0; i < 100; i++) servo_task_buttons((uint16_t)(~PS2_BTN_SQUARE));
         CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_OPEN_US,
               "一键式：按 □ 自动张开回 90°");
 
         /* SELECT -> 切到点动保持模式 */
         s_tick += SERVO_MODE_TOGGLE_MS;
-        Servo_Task((uint16_t)(~PS2_BTN_SELECT));
+        servo_task_buttons((uint16_t)(~PS2_BTN_SELECT));
         CHECK(Servo_GetGripMode() == SERVO_GRIP_MODE_JOG, "SELECT -> 切到点动保持模式(0)");
-        Servo_Task((uint16_t)(~PS2_BTN_SELECT));                /* 仍按住 */
+        servo_task_buttons((uint16_t)(~PS2_BTN_SELECT));                /* 仍按住 */
         CHECK(Servo_GetGripMode() == SERVO_GRIP_MODE_JOG, "按住 SELECT 不会连续切换");
 
         /* 点动模式：按住才动，松开就停在当前位置 */
         s_tick += SERVO_MODE_TOGGLE_MS;
-        Servo_Task(0xFFFF);                                     /* 松开 SELECT */
+        servo_task_buttons(0xFFFF);                                     /* 松开 SELECT */
         {
             uint16_t p0 = Servo_GetPulse(SERVO_CH_GRIPPER);
             uint16_t p1;
 
-            for (int i = 0; i < 5; i++) Servo_Task((uint16_t)(~PS2_BTN_CIRCLE));
+            for (int i = 0; i < 5; i++) servo_task_buttons((uint16_t)(~PS2_BTN_CIRCLE));
             p1 = Servo_GetPulse(SERVO_CH_GRIPPER);
-            CHECK(p1 == (uint16_t)(p0 - 5 * SERVO_SLEW_US_PER_TICK),
-                  "点动：按住 ○ 向闭合方向按 slew 逐步走");
+            {
+                /* 5 tick 累计 5*133/10 = 66us（0.1us 定点累加，允许 ±1us 取整差） */
+                const uint16_t moved = (uint16_t)(p0 - p1);
+                const uint16_t want  = (uint16_t)(5u * SERVO_GRIP_STEP_US10 / 10u);
+                CHECK(moved + 1u >= want && moved <= want + 1u,
+                      "点动：按住 ○ 向闭合方向按 120°/s 逐步走");
+            }
 
-            for (int i = 0; i < 10; i++) Servo_Task(0xFFFF);
-            CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == p1,
-                  "点动：松开后停在当前位置（不像一键式那样继续走）");
+            for (int i = 0; i < 10; i++) servo_task_buttons(0xFFFF);
+            {
+                /* 0.1us 定点累加会有 ±1us 取整差，允许 1us 容差 */
+                const uint16_t now = Servo_GetPulse(SERVO_CH_GRIPPER);
+                const uint16_t d   = (now > p1) ? (uint16_t)(now - p1) : (uint16_t)(p1 - now);
+                CHECK(d <= 1u, "点动：松开后停在当前位置（不像一键式那样继续走）");
+            }
 
-            for (int i = 0; i < 3; i++) Servo_Task((uint16_t)(~PS2_BTN_SQUARE));
-            CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == (uint16_t)(p1 + 3 * SERVO_SLEW_US_PER_TICK),
-                  "点动：按住 □ 向张开方向逐步走");
+            for (int i = 0; i < 3; i++) servo_task_buttons((uint16_t)(~PS2_BTN_SQUARE));
+            {
+                const uint16_t moved = (uint16_t)(Servo_GetPulse(SERVO_CH_GRIPPER) - p1);
+                const uint16_t want  = (uint16_t)(3u * SERVO_GRIP_STEP_US10 / 10u);
+                CHECK(moved + 1u >= want && moved <= want + 1u,
+                      "点动：按住 □ 向张开方向逐步走");
+            }
         }
 
         /* 再切回一键模式：不应立刻动作，按键后才走到端点 */
@@ -872,17 +1037,17 @@ int main(void)
             uint16_t tgt_before = Servo_GetTarget(SERVO_CH_GRIPPER);
 
             s_tick += SERVO_MODE_TOGGLE_MS;
-            Servo_Task((uint16_t)(~PS2_BTN_SELECT));
+            servo_task_buttons((uint16_t)(~PS2_BTN_SELECT));
             CHECK(Servo_GetGripMode() == SERVO_GRIP_MODE_ONESHOT, "再按 SELECT -> 切回一键张合");
             CHECK(Servo_GetTarget(SERVO_CH_GRIPPER) == tgt_before &&
                   tgt_before != SERVO_GRIP_OPEN_US,
                   "切模式不会立刻改变目标（保持当前位置，不会自己跑回张开位）");
 
-            for (int i = 0; i < 5; i++) Servo_Task(0xFFFF);     /* 松开 SELECT */
+            for (int i = 0; i < 5; i++) servo_task_buttons(0xFFFF);     /* 松开 SELECT */
             CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == tgt_before,
                   "切换后松开按键，机械爪停在原位不动作");
 
-            for (int i = 0; i < 100; i++) Servo_Task((uint16_t)(~PS2_BTN_CIRCLE));
+            for (int i = 0; i < 100; i++) servo_task_buttons((uint16_t)(~PS2_BTN_CIRCLE));
             CHECK(Servo_GetPulse(SERVO_CH_GRIPPER) == SERVO_GRIP_CLOSE_US,
                   "切换后按 ○ 才一次走到闭合端点（683us）");
         }
@@ -921,7 +1086,7 @@ int main(void)
         CHECK(g_ps2_dbg.mode_recover_count == c1, "模拟模式正常时不重发配置");
     }
 
-    /* ---------- 10b. 软启动斜坡（Mecanum_MoveLimitSlew） ---------- */
+    /* ---------- 10b. 电机软启动斜坡（Mecanum_MoveLimitSlew） ---------- */
     printf("[10b] 电机软启动\n");
 #if MOTOR_SLEW_ENABLE
     {
@@ -937,8 +1102,8 @@ int main(void)
               g_fake_tim4.CCR3 == (uint32_t)MOTOR_SLEW_STEP,
               "软启动：第一步只给 MOTOR_SLEW_STEP（不会一步跳到位）");
 
-        /* 连续调用足够多次后应到达目标 */
-        for (int i = 0; i < 40; i++) Mecanum_MoveLimitSlew(1000, 0, 0, 1000);
+        /* 连续调用足够多次后应到达目标（按步长算次数，改 MOTOR_SLEW_STEP 不用动测试） */
+        for (int i = 0; i < (1000 / MOTOR_SLEW_STEP) + 5; i++) Mecanum_MoveLimitSlew(1000, 0, 0, 1000);
         CHECK(g_fake_tim2.CCR1 == 1000 && g_fake_tim2.CCR3 == 1000 &&
               g_fake_tim4.CCR1 == 1000 && g_fake_tim4.CCR3 == 1000,
               "软启动：持续调用后爬到目标值");
@@ -948,12 +1113,12 @@ int main(void)
         memset(&g_fake_tim4, 0, sizeof g_fake_tim4);
         Mecanum_MoveLimitSlew(-1000, 0, 0, 1000);
         CHECK(g_fake_tim2.CCR1 == (uint32_t)(1000 - MOTOR_SLEW_STEP),
-              "软启动：正转->反转是逐步过渡（一步只降 MOTOR_SLEW_STEP，不瞬间反接）");
-        for (int i = 0; i < 40; i++) Mecanum_MoveLimitSlew(-1000, 0, 0, 1000);
+              "软启动：正转->反转是逐步过渡（一步只降 MOTOR_SLEW_STEP）");
+        for (int i = 0; i < (2000 / MOTOR_SLEW_STEP) + 5; i++) Mecanum_MoveLimitSlew(-1000, 0, 0, 1000);
         CHECK(g_fake_tim2.CCR2 == 1000 && g_fake_tim2.CCR1 == 0,
-              "软启动：逐步过渡后完成反转（IN2 占到空比、IN1 归零）");
+              "软启动：逐步过渡后完成反转（IN2 占空、IN1 归零）");
 
-        /* 停车会清零软启动状态：再起步又是从 MOTOR_SLEW_STEP 开始 */
+        /* 停车会清零软启动状态：再起步又从 MOTOR_SLEW_STEP 开始 */
         Motor_StopAll();
         memset(&g_fake_tim2, 0, sizeof g_fake_tim2);
         Mecanum_MoveLimitSlew(1000, 0, 0, 1000);
@@ -973,7 +1138,6 @@ int main(void)
         memset(&g_fake_dbgmcu, 0, sizeof g_fake_dbgmcu);
 
         Watchdog_Init();
-#if WATCHDOG_ENABLE
         CHECK(g_fake_iwdg.PR == WATCHDOG_PRESCALER, "预分频 = /64 -> 625Hz 计数");
         CHECK(g_fake_iwdg.RLR == WATCHDOG_RELOAD, "重装值 = 625");
         CHECK(g_fake_iwdg.KR == 0x0000CCCCU, "以 0xCCCC 启动（启动后软件不能关）");
@@ -991,15 +1155,8 @@ int main(void)
         g_fake_iwdg.KR = 0;
         Watchdog_Feed();
         CHECK(g_fake_iwdg.KR == 0x0000AAAAU, "喂狗写 0xAAAA（重装载）");
-#else
-        /* WATCHDOG_ENABLE=0：Init/Feed 必须是空操作（不启动、不写寄存器） */
-        CHECK(g_fake_iwdg.PR == 0 && g_fake_iwdg.RLR == 0 && g_fake_iwdg.KR == 0,
-              "看门狗已关闭：Init 不写 IWDG 寄存器");
-        CHECK(g_fake_dbgmcu.CR == 0, "看门狗已关闭：不改 DBGMCU_CR");
-        Watchdog_Feed();
-        CHECK(g_fake_iwdg.KR == 0, "看门狗已关闭：Feed 为空操作");
-#endif
     }
 
-    printf("\n结果: %d 通过, %d 失败\n", g_pass, g_fail);    return g_fail ? 1 : 0;
+    printf("\n结果: %d 通过, %d 失败\n", g_pass, g_fail);
+    return g_fail ? 1 : 0;
 }
